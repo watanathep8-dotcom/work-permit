@@ -167,7 +167,7 @@ module.exports = function run() {
   check('attachment by id needs session', post({ action: 'file', id: 1 }).code === 'AUTH');
 
   // admin-only actions must refuse anonymous / bogus / token callers
-  ['poll', 'dashboard', 'permits', 'save_review', 'decide', 'delete', 'users', 'user_save', 'user_toggle', 'me'].forEach((a) => {
+  ['poll', 'dashboard', 'permits', 'save_review', 'decide', 'delete', 'users', 'user_save', 'user_toggle', 'me', 'reset_data'].forEach((a) => {
     check('anonymous ' + a + ' refused', post({ action: a, id: 1, decision: 'approve', fullname: 'x', no: P1.permit_no, t: P1.token }).code === 'AUTH');
     check('bogus session ' + a + ' refused', post({ action: a, id: 1, session: '0'.repeat(64) }).code === 'AUTH');
   });
@@ -241,6 +241,7 @@ module.exports = function run() {
   check('expired (approved) can still be closed like PHP', post({ action: 'decide', session: S, id: P3.id, decision: 'close' }).ok);
   r = post(Object.assign(base(), { attachment: null }));
   check('numbering restarts per Bangkok day', r.ok && r.data.permit_no === 'WP-20261006-001', r);
+  const P4 = r.data;
 
   // ================================================================ users
   r = post({ action: 'users', session: S });
@@ -292,6 +293,60 @@ module.exports = function run() {
   check('deleted permit files moved to Drive trash', fileIds.length === 4 && fileIds.every((id) => gas.files.get(id).isTrashed()));
   check('logs of deleted permit removed', ss.getSheetByName('permit_logs').getDataRange().getValues().slice(1).every((row) => String(row[1]) !== '1'));
   check('other permits intact', post({ action: 'permit', no: P2.permit_no, t: P2.token }).ok);
+
+  // ================================================================ reset_data
+  const pSheet = ss.getSheetByName('permits'), lSheet = ss.getSheetByName('permit_logs');
+  const RESET_PW = 'Reset-Only-For-Tests-9';
+  check('reset: no session → AUTH', post({ action: 'reset_data', resetPassword: RESET_PW }).code === 'AUTH');
+  check('reset: token holder (no session) → AUTH', post({ action: 'reset_data', no: P2.permit_no, t: P2.token, resetPassword: RESET_PW }).code === 'AUTH');
+  r = post({ action: 'reset_data', session: S, resetPassword: RESET_PW });
+  check('reset: refused while WP_RESET_PASSWORD unset', !r.ok && r.code === 'SETUP' && /WP_RESET_PASSWORD/.test(r.error), r);
+  check('reset password is not in the source', !['Code.gs', 'Auth.gs', 'Permits.gs', 'Setup.gs'].some((f) => /WP_RESET_PASSWORD['"]?\s*[:=]\s*['"][^'"]+['"]/.test(fs.readFileSync(path.join(ROOT, 'apps-script', f), 'utf8'))));
+  gas.propStore.WP_RESET_PASSWORD = RESET_PW;
+  const beforeRows = pSheet.getLastRow();
+  gas.stats.sleeps.length = 0;
+  r = post({ action: 'reset_data', session: S, resetPassword: 'wrong' });
+  check('reset: wrong password refused', !r.ok && r.code === 'AUTH_FAILED' && /ไม่ถูกต้อง/.test(r.error), r);
+  check('reset: wrong password sleeps 1s', gas.stats.sleeps[0] === 1000);
+  check('reset: missing password refused', post({ action: 'reset_data', session: S }).code === 'AUTH_FAILED');
+  check('reset: nothing deleted after failures', pSheet.getLastRow() === beforeRows && beforeRows > 1);
+  for (let i = 0; i < 8; i++) post({ action: 'reset_data', session: S, resetPassword: 'bad' + i });
+  r = post({ action: 'reset_data', session: S, resetPassword: RESET_PW });
+  check('reset: locked after 10 wrong passwords (even with the right one)', !r.ok && r.code === 'LOCKED', r);
+  check('reset lockout does not lock login', post({ action: 'login', username: 'admin', password: 'Brand-New-1' }).ok);
+  check('reset: still nothing deleted while locked', pSheet.getLastRow() === beforeRows);
+  gas.clock.offset += 16 * 60 * 1000;
+  // lock P4's tracking number (10 wrong phones) — must not haunt the next permit with the same number
+  for (let i = 0; i < 10; i++) post({ action: 'track', permit_no: P4.permit_no, phone: '000' + i });
+  check('track locked before reset', post({ action: 'track', permit_no: P4.permit_no, phone: '0812345678' }).code === 'LOCKED');
+  const permitCount = pSheet.getLastRow() - 1, logCount = lSheet.getLastRow() - 1;
+  const liveFiles = [...gas.files.values()].filter((f) => !f.isTrashed()).length;
+  const S2c = post({ action: 'login', username: 'safety2', password: 'new-pass-2' }).data.session;
+  r = post({ action: 'reset_data', session: S, resetPassword: RESET_PW });
+  check('reset: success', r.ok && r.data.permits_removed === permitCount && r.data.logs_removed === logCount && r.data.files_trashed === liveFiles && permitCount === 3 && liveFiles > 0, { r, permitCount, logCount, liveFiles });
+  check('reset: permits sheet only header left', pSheet.getLastRow() === 1 && pSheet.getRange(1, 1, 1, G.WP_SCHEMA.permits.length).getValues()[0].join() === G.WP_SCHEMA.permits.join());
+  check('reset: logs sheet only header left', lSheet.getLastRow() === 1 && lSheet.getRange(1, 1, 1, G.WP_SCHEMA.permit_logs.length).getValues()[0].join() === G.WP_SCHEMA.permit_logs.join());
+  check('reset: every Drive file in trash (not deleted)', gas.files.size > 0 && [...gas.files.values()].every((f) => f.isTrashed()));
+  check('reset recorded in execution log', gas.logs.some((l) => l.startsWith('LOG WP reset_data by admin')));
+  check('reset: users kept', ss.getSheetByName('users').getLastRow() === 3 && post({ action: 'users', session: S }).data.users.length === 2);
+  check('reset: current session still works', post({ action: 'me', session: S }).ok);
+  check('reset: other user session still works', post({ action: 'me', session: S2c }).ok);
+  check('reset: login still works', post({ action: 'login', username: 'safety2', password: 'new-pass-2' }).ok);
+  r = post({ action: 'dashboard', session: S });
+  check('reset: dashboard empty', r.ok && r.data.cnt.pending === 0 && r.data.cnt.closed === 0 && r.data.pending.length === 0 && r.data.days.every((x) => x.count === 0), r);
+  check('reset: stats zero', get({ action: 'stats' }).data.total === 0);
+  check('reset: permits list empty', post({ action: 'permits', session: S }).data.rows.length === 0);
+  check('reset: old token no longer tracks', post({ action: 'permit', no: P2.permit_no, t: P2.token }).code === 'NOT_FOUND' && post({ action: 'permit', no: P4.permit_no, t: P4.token }).code === 'NOT_FOUND');
+  check('reset: old attachment unreachable', post({ action: 'file', no: P2.permit_no, t: P2.token }).code === 'NOT_FOUND');
+  check('reset: second reset (nothing left) is fine', (() => { const x = post({ action: 'reset_data', session: S, resetPassword: RESET_PW }); return x.ok && x.data.permits_removed === 0 && x.data.files_trashed === 0; })());
+  r = post(base());
+  check('after reset: first number of the day again, id 1', r.ok && r.data.permit_no === P4.permit_no && r.data.permit_no === 'WP-20261006-001' && r.data.id === 1, r);
+  const P5 = r.data;
+  check('after reset: old token of the reused number fails', post({ action: 'permit', no: P5.permit_no, t: P4.token }).code === 'NOT_FOUND');
+  r = post({ action: 'permit', no: P5.permit_no, t: P5.token, signs: true });
+  check('after reset: new permit readable with one log + files', r.ok && r.data.logs.length === 1 && r.data.signs.requester.startsWith('data:image/png') && pSheet.getLastRow() === 2 && lSheet.getLastRow() === 2, r);
+  check('after reset: tracking lockout of reused number cleared', post({ action: 'track', permit_no: P5.permit_no, phone: '0812345678' }).ok);
+  check('after reset: second submit 002', post(Object.assign(base(), { attachment: null })).data.permit_no === 'WP-20261006-002');
 
   // ================================================================ invariants
   check('every sheet write happened under LockService', gas.stats.unlockedWrites === 0, gas.stats.unlockedWrites);

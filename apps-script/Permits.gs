@@ -579,3 +579,85 @@ function apiDelete_(d, ctx) {
     return true;
   });
 }
+
+// ---------------------------------------------------------------- RESET (admin + reset password)
+var WP_PROP_RESET_PASSWORD = 'WP_RESET_PASSWORD';
+var WP_RESET_MAX_FAIL = 10;
+var WP_RESET_FAIL_KEY = 'wprf_reset'; // one global counter (not per user), separate from login lockout
+
+/**
+ * reset_data — wipes all test data so the system can start over:
+ *  - every data row of `permits` and `permit_logs` (header row + formats kept)
+ *  - every file in the attachments/signatures Drive folder → Drive trash (recoverable for 30 days)
+ * Users and their sessions are untouched. Requires an admin session AND the
+ * reset password stored only in Script Property WP_RESET_PASSWORD.
+ */
+function apiResetData_(p, ctx) {
+  var u = requireAdmin_(p, ctx);
+  var expected = String(props_().getProperty(WP_PROP_RESET_PASSWORD) || '');
+  if (!expected) {
+    fail_('ยังไม่ได้ตั้งรหัสผ่านสำหรับรีเซ็ตข้อมูล กรุณาตั้งค่า Script Property "' + WP_PROP_RESET_PASSWORD +
+      '" ใน Apps Script (Project Settings > Script properties) ก่อน', 'SETUP');
+  }
+  var given = typeof p.resetPassword === 'string' ? p.resetPassword : '';
+  var cache = cache_();
+  var fails = Number(cache.get(WP_RESET_FAIL_KEY)) || 0;
+  if (fails >= WP_RESET_MAX_FAIL) {
+    fail_('กรอกรหัสผ่านรีเซ็ตผิดเกิน ' + WP_RESET_MAX_FAIL + ' ครั้ง ระงับการรีเซ็ตชั่วคราว 15 นาที', 'LOCKED');
+  }
+  // compare fixed-length digests so the comparison does not leak the length
+  if (!given || !safeEqual_(sha256Hex_(given), sha256Hex_(expected))) {
+    cache.put(WP_RESET_FAIL_KEY, String(fails + 1), WP_LOGIN_LOCK_SEC);
+    Utilities.sleep(1000);
+    fail_('รหัสผ่านสำหรับรีเซ็ตข้อมูลไม่ถูกต้อง', 'AUTH_FAILED');
+  }
+  cache.remove(WP_RESET_FAIL_KEY);
+
+  return withLock_(function () {
+    ctx.tables = {}; // re-read fresh data now that we hold the lock
+    ctx.user = null;
+    u = requireAdmin_(p, ctx);
+    var pt = table_(ctx, 'permits');
+    var lt = table_(ctx, 'permit_logs');
+    var permitsRemoved = pt.rows.length, logsRemoved = lt.rows.length;
+
+    // Drive: everything in the app folder, plus any referenced file that lives elsewhere.
+    var trashed = 0, seen = {};
+    var trashOne = function (f) {
+      var id = f.getId();
+      if (seen[id]) return;
+      seen[id] = true;
+      try {
+        if (f.isTrashed()) return;
+        f.setTrashed(true);
+        trashed++;
+      } catch (e) { console.warn('reset: trash failed: ' + id); }
+    };
+    var it = folder_().getFiles();
+    while (it.hasNext()) trashOne(it.next());
+    var trackKeys = [];
+    pt.rows.forEach(function (r) {
+      [r.attachment_file, r.requester_sign_file, r.owner_sign_file, r.approver_sign_file].forEach(function (id) {
+        if (!id || seen[id]) return;
+        try { trashOne(DriveApp.getFileById(id)); } catch (e) { seen[id] = true; }
+      });
+      if (r.permit_no) trackKeys.push('wptf_' + r.permit_no);
+    });
+
+    // Sheets: clear data rows only (header row, column formats and row count are kept).
+    [pt, lt].forEach(function (t) {
+      var last = t.sheet.getLastRow();
+      if (last > 1) t.sheet.getRange(2, 1, last - 1, t.sheet.getMaxColumns()).clearContent();
+    });
+    // Track-lockout counters of the removed permit numbers would otherwise hit the
+    // new permits that reuse those numbers (numbering restarts at -001).
+    trackKeys.forEach(function (k) { cache.remove(k); });
+    ctx.tables = {};
+
+    var result = { permits_removed: permitsRemoved, logs_removed: logsRemoved, files_trashed: trashed, at: nowStr_(), by: u.fullname };
+    // Admin audit: there is no audit sheet (a row in permit_logs would itself be "data"),
+    // so the reset is recorded in the Apps Script execution log.
+    console.log('WP reset_data by ' + u.username + ' (' + u.fullname + '): ' + JSON.stringify(result));
+    return result;
+  });
+}

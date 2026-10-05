@@ -18,7 +18,7 @@
 <div class="card hero-strip glow-border always reveal">
   <div class="hs-ic"><i class="fa-solid fa-user-shield ic-beat"></i></div>
   <div><h2>สวัสดี, ${E(d.user.fullname)}</h2><div class="meta"><span><i class="fa-solid fa-shield-heart"></i> Safety First — วันนี้มีใบขออนุญาตรออนุมัติ <b style="color:var(--gold)">${cnt.pending}</b> รายการ</span></div></div>
-  <div class="actions"><a href="permits.html?status=pending" class="btn gold"><i class="fa-solid fa-gavel"></i> พิจารณาคำขอ</a></div>
+  <div class="actions"><a href="permits.html?status=pending" class="btn gold"><i class="fa-solid fa-gavel"></i> พิจารณาคำขอ</a><button type="button" id="reset-data" class="btn danger"><i class="fa-solid fa-trash-can"></i> 🗑 รีเซ็ตข้อมูล / Reset data</button></div>
 </div>
 
 <div class="stats">
@@ -87,4 +87,33 @@
   const tick = () => document.querySelectorAll('[data-until]').forEach(e => e.textContent = 'ในอีก ' + fmt(+e.dataset.until - Date.now() / 1000));
   tick(); setInterval(tick, 30000);
   document.addEventListener('wp:new', () => setTimeout(() => location.reload(), 4000));
+
+  // ---------- reset all test data (admin session + WP_RESET_PASSWORD) ----------
+  $('#reset-data').onclick = async () => {
+    const pw = await Swal.fire({
+      icon: 'warning', title: 'รีเซ็ตข้อมูลทั้งหมด', text: 'กรอกรหัสผ่านสำหรับรีเซ็ตข้อมูล (Reset password)',
+      input: 'password', inputAttributes: { autocomplete: 'off', autocapitalize: 'off' },
+      inputValidator: v => !v && 'กรุณากรอกรหัสผ่านสำหรับรีเซ็ต',
+      showCancelButton: true, confirmButtonText: 'ถัดไป', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#dc2626'
+    });
+    if (!pw.isConfirmed || !pw.value) return;
+    const c = await Swal.fire({
+      icon: 'warning', title: 'ยืนยันการรีเซ็ตข้อมูล?',
+      html: `<div style="text-align:left;line-height:1.7">ระบบจะ<b>ลบข้อมูลต่อไปนี้ทั้งหมด</b>:<ul style="margin:6px 0 10px 20px">
+        <li>ใบขออนุญาตทำงานทุกใบ (ทุกสถานะ)</li><li>ประวัติการดำเนินการ (logs) ทั้งหมด</li>
+        <li>ไฟล์แนบทั้งหมด</li><li>ลายเซ็นทั้งหมด (ผู้ขอ / ผู้รับผิดชอบ / ผู้อนุมัติ)</li></ul>
+        บัญชีผู้ใช้ จป. จะ<b>ยังคงอยู่</b> และไม่ต้องเข้าสู่ระบบใหม่<br>
+        เลขที่ใบอนุญาตจะเริ่มนับใหม่ และลิงก์ติดตามเดิมจะใช้ไม่ได้อีก<br>
+        <b style="color:#ef4444">การดำเนินการนี้ไม่สามารถย้อนกลับได้</b></div>`,
+      showCancelButton: true, focusCancel: true, confirmButtonText: '<i class="fa-solid fa-trash-can"></i> ลบข้อมูลทั้งหมด', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#dc2626'
+    });
+    if (!c.isConfirmed) return;
+    Swal.fire({ title: 'กำลังรีเซ็ตข้อมูล...', showConfirmButton: false, allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    const x = await WP.api('reset_data', { resetPassword: pw.value });
+    if (!x.ok) return Swal.fire({ icon: 'error', title: 'รีเซ็ตไม่สำเร็จ', text: x.msg });
+    const n = x.data;
+    await Swal.fire({ icon: 'success', title: 'รีเซ็ตข้อมูลเรียบร้อย',
+      html: `ลบใบอนุญาต <b>${+n.permits_removed}</b> ใบ<br>ลบประวัติ (logs) <b>${+n.logs_removed}</b> รายการ<br>ย้ายไฟล์ไปถังขยะ Google Drive <b>${+n.files_trashed}</b> ไฟล์` });
+    location.reload();
+  };
 })();

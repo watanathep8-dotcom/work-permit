@@ -56,6 +56,15 @@ function createGas() {
       });
       return this;
     }
+    clearContent() {
+      stats.writes++;
+      if (!lockHeld) stats.unlockedWrites++;
+      for (let i = 0; i < this.nr; i++) {
+        const row = this.sheet.data[this.r - 1 + i];
+        if (row) for (let j = 0; j < this.nc; j++) if (this.c - 1 + j < row.length) row[this.c - 1 + j] = '';
+      }
+      return this;
+    }
     setNumberFormat() { return this; }
     setFontWeight() { return this; }
   }
@@ -129,6 +138,11 @@ function createGas() {
     getId() { return this.id; }
     getUrl() { return 'https://drive.google.com/drive/folders/' + this.id; }
     createFile(blob) { const f = new File(blob, this); files.set(f.id, f); return f; }
+    getFiles() { // like DriveApp's FileIterator (trashed files are still listed)
+      const list = [...files.values()].filter((f) => f.folder === this);
+      let i = 0;
+      return { hasNext: () => i < list.length, next: () => { if (i >= list.length) throw new Error('No more items'); return list[i++]; } };
+    }
   }
   const DriveApp = {
     createFolder(n) { const f = new Folder(n); folders.set(f.id, f); return f; },
@@ -216,7 +230,7 @@ function createGas() {
   const context = {
     SpreadsheetApp, DriveApp, PropertiesService, CacheService, LockService, Utilities, ContentService,
     Logger: { log: (m) => logs.push(String(m)) },
-    console: { log() {}, warn() {}, error: (...a) => logs.push('ERROR ' + a.join(' ')) },
+    console: { log: (...a) => logs.push('LOG ' + a.join(' ')), warn() {}, error: (...a) => logs.push('ERROR ' + a.join(' ')) },
     JSON, Math, Date, Object, Array, String, Number, Boolean, RegExp, Error, encodeURIComponent, parseInt, parseFloat, isNaN
   };
   vm.createContext(context);

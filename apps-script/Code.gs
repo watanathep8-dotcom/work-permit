@@ -93,7 +93,8 @@ function routes_() {
     'delete': apiDelete_,
     users: apiUsers_,
     user_save: apiUserSave_,
-    user_toggle: apiUserToggle_
+    user_toggle: apiUserToggle_,
+    reset_data: apiResetData_
   };
 }
 var WP_GET_ACTIONS = { ping: true, config: true, stats: true };
