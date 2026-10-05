@@ -5,7 +5,7 @@
   const root = $('#view-root');
   const id = +WP.qs('id');
   if (!id) { location.replace('permits.html'); return; }
-  const r = await WP.api('permit', { id, signs: true });
+  const r = await WP.read('permit', { id, signs: true }); // batched with the sidebar's me + poll
   if (!r.ok) {
     if (r.code === 'NOT_FOUND') { location.replace('permits.html'); return; }
     root.innerHTML = `<div class="alert err"><i class="fa-solid fa-triangle-exclamation"></i><div>${E(r.msg)}</div></div>`;

@@ -13,9 +13,10 @@
     e.preventDefault();
     const f = e.target, btn = $('button', f);
     btn.disabled = true;
-    const r = await WP.api('track', { permit_no: f.permit_no.value, phone: f.phone.value });
+    const r = await WP.api('track', { permit_no: f.permit_no.value, phone: f.phone.value, with_permit: true });
     btn.disabled = false;
     if (!r.ok) return Swal.fire({ icon: 'error', title: 'ไม่พบข้อมูล', text: r.msg });
+    WP.handoff(r.data.permit_no, r.data.token, r.data.view); // status page paints it without another round-trip
     location.href = `${WP.base}/status.html?no=${encodeURIComponent(r.data.permit_no)}&t=${r.data.token}`;
   });
 })();

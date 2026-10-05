@@ -119,8 +119,7 @@ function apiUserSave_(p, ctx) {
   var pass = typeof p.password === 'string' ? p.password : '';
   if (fullname === '') fail_('กรุณากรอกชื่อ-นามสกุล');
   return withLock_(function () {
-    ctx.tables = {}; // re-read fresh data now that we hold the lock
-    ctx.user = null;
+    relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
     var me = requireAdmin_(p, ctx);
     var t = table_(ctx, 'users');
     var out = { ok: true };
@@ -167,7 +166,7 @@ function apiUserToggle_(p, ctx) {
   var id = Number(p.id) || 0;
   if (id === Number(me.id)) fail_('ไม่สามารถปิดการใช้งานบัญชีของตนเองได้');
   return withLock_(function () {
-    ctx.tables = {};
+    relockCtx_(ctx);
     var t = table_(ctx, 'users');
     var u = findById_(t, id);
     if (!u) fail_('ไม่พบผู้ใช้', 'NOT_FOUND');

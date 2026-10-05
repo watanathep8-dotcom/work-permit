@@ -2,10 +2,11 @@
 (async () => {
   if (WP.halt) return;
   const { $, $$ } = WP, E = WP.esc;
-  const r = await WP.api('users');
+  // Painted at once from this tab's last copy (if any), then again only if the server's answer differs.
+  const render = r => {
   if (!r.ok) { $('#users-body').innerHTML = `<tr><td colspan="5"><div class="alert err"><i class="fa-solid fa-triangle-exclamation"></i><div>${E(r.msg)}</div></div></td></tr>`; return; }
   const { users, me, initial_password_warning } = r.data;
-  if (initial_password_warning) $('#pw-warn').classList.remove('hide');
+  $('#pw-warn').classList.toggle('hide', !initial_password_warning);
   $('#users-body').innerHTML = users.map(x => `
     <tr><td class="p-no">${E(x.username)}</td><td>${E(x.fullname)}</td><td>${E(x.position)}</td>
       <td>${x.active ? '<span class="badge st-approved"><i class="fa-solid fa-circle-check"></i> ใช้งาน</span>' : '<span class="badge st-expired"><i class="fa-solid fa-ban"></i> ปิดใช้งาน</span>'}</td>
@@ -30,4 +31,6 @@
   $('#add').onclick = () => form();
   $$('.edit').forEach(b => b.onclick = () => form(users.find(u => u.id === +b.dataset.id)));
   $$('.toggle').forEach(b => b.onclick = async () => { const res = await WP.api('user_toggle', { id: +b.dataset.id }); res.ok ? location.reload() : Swal.fire({ icon: 'error', title: res.msg }); });
+  };
+  await WP.swr('users', {}, render);
 })();

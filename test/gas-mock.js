@@ -13,7 +13,7 @@ const vm = require('vm');
 
 function createGas() {
   const clock = { offset: 0, now() { return Date.now() + this.offset; } };
-  const stats = { unlockedWrites: 0, writes: 0, sleeps: [], sharingCalls: 0 };
+  const stats = { unlockedWrites: 0, writes: 0, sleeps: [], sharingCalls: 0, sheetReads: {} };
   let lockHeld = 0;
   let idSeq = 0;
   const newId = (p) => p + '_' + (++idSeq) + '_' + crypto.randomBytes(4).toString('hex');
@@ -87,7 +87,10 @@ function createGas() {
     insertRowsAfter(after, n) { this.maxRows += n; return this; }
     insertColumnsAfter(after, n) { this.maxCols += n; return this; }
     getRange(r, c, nr = 1, nc = 1) { return new Range(this, r, c, nr, nc); }
-    getDataRange() { return new Range(this, 1, 1, Math.max(this.getLastRow(), 1), Math.max(this.getLastColumn(), 1)); }
+    getDataRange() {
+      stats.sheetReads[this.name] = (stats.sheetReads[this.name] || 0) + 1;
+      return new Range(this, 1, 1, Math.max(this.getLastRow(), 1), Math.max(this.getLastColumn(), 1));
+    }
     deleteRow(r) {
       stats.writes++;
       if (!lockHeld) stats.unlockedWrites++;
@@ -177,10 +180,17 @@ function createGas() {
     put(k, v, ttl) {
       if (typeof v !== 'string') throw new Error('cache value must be a string');
       if (k.length > 250) throw new Error('cache key too long');
+      if (Buffer.byteLength(v, 'utf8') > 100 * 1024) throw new Error('Argument too large: value'); // CacheService limit 100 KB
       ttl = Math.min(ttl || 600, 21600);
       cacheStore.set(k, { v, exp: clock.now() + ttl * 1000 });
     },
-    remove(k) { cacheStore.delete(k); }
+    remove(k) { cacheStore.delete(k); },
+    getAll(keys) {
+      const out = {};
+      keys.forEach((k) => { const v = scriptCache.get(k); if (v !== null) out[k] = v; });
+      return out;
+    },
+    putAll(values, ttl) { Object.keys(values).forEach((k) => scriptCache.put(k, values[k], ttl)); }
   };
   const CacheService = { getScriptCache: () => scriptCache };
 

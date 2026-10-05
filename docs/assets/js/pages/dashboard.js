@@ -3,8 +3,12 @@
   if (WP.halt) return;
   const { $ } = WP, D = WP.data, E = WP.esc, WT = D.workTypes;
   const root = $('#dash-root');
-  const r = await WP.api('dashboard');
+  let charts = [], shown = false;
+  // Painted at once from this tab's last copy (if any), then again only if the server's answer differs.
+  const render = r => {
   if (!r.ok) { root.innerHTML = `<div class="alert err"><i class="fa-solid fa-triangle-exclamation"></i><div>${E(r.msg)}</div></div>`; return; }
+  shown = true;
+  charts.forEach(c => c.destroy()); charts = [];
   const d = r.data, cnt = d.cnt;
   const B = WP.base;
   const tiles = [
@@ -74,23 +78,24 @@
     Chart.defaults.color = '#a7d8bd'; Chart.defaults.font.family = 'Kanit'; Chart.defaults.borderColor = 'rgba(52,211,153,.12)';
     const ctx = document.getElementById('c-days').getContext('2d');
     const g = ctx.createLinearGradient(0, 0, 0, 280); g.addColorStop(0, 'rgba(163,230,53,.9)'); g.addColorStop(1, 'rgba(16,185,129,.15)');
-    new Chart(ctx, { type: 'bar', data: { labels: d.days.map(x => new Date(x.date + 'T12:00:00').toLocaleDateString('th-TH', { day: 'numeric', month: 'short' })),
+    charts.push(new Chart(ctx, { type: 'bar', data: { labels: d.days.map(x => new Date(x.date + 'T12:00:00').toLocaleDateString('th-TH', { day: 'numeric', month: 'short' })),
       datasets: [{ label: 'จำนวนคำขอ', data: d.days.map(x => x.count), backgroundColor: g, borderRadius: 8, borderSkipped: false, maxBarThickness: 34 }] },
       options: { maintainAspectRatio: false, animation: { duration: 1600, easing: 'easeOutElastic', delay: c => c.dataIndex * 60 },
-        plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } } });
+        plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } } }));
     const keys = Object.keys(WT);
-    new Chart(document.getElementById('c-types'), { type: 'doughnut', data: { labels: keys.map(k => WT[k].short),
+    charts.push(new Chart(document.getElementById('c-types'), { type: 'doughnut', data: { labels: keys.map(k => WT[k].short),
       datasets: [{ data: keys.map(k => d.byType[k] || 0), backgroundColor: keys.map(k => WT[k].color), borderColor: '#04170e', borderWidth: 3, hoverOffset: 14 }] },
-      options: { maintainAspectRatio: false, cutout: '64%', animation: { animateRotate: true, duration: 1800 }, plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, padding: 14 } } } } });
+      options: { maintainAspectRatio: false, cutout: '64%', animation: { animateRotate: true, duration: 1800 }, plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, padding: 14 } } } } }));
   }
+  tick();
+  $('#reset-data').onclick = resetData;
+  };
 
   const fmt = s => { if (s <= 0) return 'หมดเวลา'; const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return (h ? h + ' ชม. ' : '') + m + ' นาที'; };
   const tick = () => document.querySelectorAll('[data-until]').forEach(e => e.textContent = 'ในอีก ' + fmt(+e.dataset.until - Date.now() / 1000));
-  tick(); setInterval(tick, 30000);
-  document.addEventListener('wp:new', () => setTimeout(() => location.reload(), 4000));
 
   // ---------- reset all test data (admin session + WP_RESET_PASSWORD) ----------
-  $('#reset-data').onclick = async () => {
+  const resetData = async () => {
     const pw = await Swal.fire({
       icon: 'warning', title: 'รีเซ็ตข้อมูลทั้งหมด', text: 'กรอกรหัสผ่านสำหรับรีเซ็ตข้อมูล (Reset password)',
       input: 'password', inputAttributes: { autocomplete: 'off', autocapitalize: 'off' },
@@ -117,4 +122,9 @@
       html: `ลบใบอนุญาต <b>${+n.permits_removed}</b> ใบ<br>ลบประวัติ (logs) <b>${+n.logs_removed}</b> รายการ<br>ย้ายไฟล์ไปถังขยะ Google Drive <b>${+n.files_trashed}</b> ไฟล์` });
     location.reload();
   };
+
+  await WP.swr('dashboard', {}, render);
+  if (!shown) return;
+  setInterval(tick, 30000);
+  document.addEventListener('wp:new', () => setTimeout(() => { WP.swrClear(); location.reload(); }, 4000));
 })();

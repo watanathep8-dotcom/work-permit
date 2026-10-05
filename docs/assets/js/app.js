@@ -93,8 +93,8 @@
   WP.tilt();
 
   // ---------- Counters ----------
-  WP.countUp = (el, to, dur = 1400) => {
-    const t0 = performance.now(), from = 0;
+  WP.countUp = (el, to, dur = 1400, from = 0) => {
+    const t0 = performance.now();
     const step = t => {
       const k = Math.min(1, (t - t0) / dur), e = 1 - Math.pow(1 - k, 4);
       el.textContent = Math.round(from + (to - from) * e).toLocaleString('th-TH');
@@ -364,12 +364,16 @@
       $('#bell').classList.toggle('has', n > 0);
       document.title = (n ? `(${n}) ` : '') + document.title.replace(/^\(\d+\)\s/, '');
     };
+    // last count seen in this tab: shown at once; the first poll (batched with the page's data) refreshes it
+    const known = WP.cacheGet('pending', {});
+    if (typeof known === 'number') setCount(known);
     const poll = async () => {
       try {
-        const j = await WP.api('poll', lastId !== null ? { since: lastId } : {});
+        const j = await WP.read('poll', lastId !== null ? { since: lastId } : {});
         if (!j.ok) return;
         const r = j.data;
         setCount(r.pending);
+        WP.cachePut('pending', {}, r.pending);
         if (lastId !== null && r.new && r.new.length) {
           WP.chime();
           r.new.forEach(p => WP.toast('มีใบขออนุญาตใหม่! ' + p.permit_no, `${p.requester_name} · ${p.location}`, `${WP.base}/admin/view.html?id=${p.id}`));

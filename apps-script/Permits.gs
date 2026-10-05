@@ -275,15 +275,18 @@ function authorizedPermit_(p, ctx) {
 // ---------------------------------------------------------------- PUBLIC
 /** index.php hero counters (aggregate numbers only — no permit data). */
 function apiStats_(p, ctx) {
-  var today = todayStr_();
-  var s = { total: 0, approved: 0, pending: 0, today: 0 };
-  table_(ctx, 'permits').rows.forEach(function (r) {
-    s.total++;
-    if (r.status === 'approved') s.approved++;
-    if (r.status === 'pending') s.pending++;
-    if (String(r.created_at).substring(0, 10) === today) s.today++;
+  return cachedRead_(ctx, 'stats', null, function () {
+    var today = todayStr_();
+    var s = { total: 0, approved: 0, pending: 0, today: 0 };
+    var rows = table_(ctx, 'permits').rows;
+    rows.forEach(function (r) {
+      s.total++;
+      if (r.status === 'approved') s.approved++;
+      if (r.status === 'pending') s.pending++;
+      if (String(r.created_at).substring(0, 10) === today) s.today++;
+    });
+    return { data: s, until: permitsValidUntil_([]) }; // depends on "today" only
   });
-  return s;
 }
 
 /**
@@ -386,7 +389,11 @@ function apiSubmit_(d) {
       addLog_(ctx, row.id, 'submit', row.requester_name, 'ยื่นใบขออนุญาตปฏิบัติงาน');
       var path = 'track.html?no=' + encodeURIComponent(row.permit_no) + '&t=' + row.token;
       var site = String(props_().getProperty(WP_PROP_SITE_URL) || '').replace(/\/+$/, '');
-      return { id: row.id, permit_no: row.permit_no, token: row.token, track_path: path, track_url: site ? site + '/' + path : '' };
+      var out = { id: row.id, permit_no: row.permit_no, token: row.token, track_path: path, track_url: site ? site + '/' + path : '' };
+      // Optional: the status page data (= action permit with no + t) so the browser
+      // can show it without another round-trip. Built from the values as stored.
+      if (d.with_permit) out.view = { permit: permitOut_(storedRow_(t, row)), logs: logsFor_(ctx, row.id) };
+      return out;
     });
   } catch (err) {
     created.forEach(trashDriveFile_);
@@ -407,7 +414,10 @@ function apiTrack_(d, ctx) {
     cache.put(key, String((Number(cache.get(key)) || 0) + 1), WP_LOGIN_LOCK_SEC);
     fail_('ไม่พบข้อมูล กรุณาตรวจสอบเลขที่และเบอร์โทรศัพท์', 'NOT_FOUND');
   }
-  return { permit_no: r.permit_no, token: r.token };
+  var out = { permit_no: r.permit_no, token: r.token };
+  // Optional: the status page data (= action permit with no + t) in the same round-trip.
+  if (d.with_permit) out.view = { permit: permitOut_(r), logs: logsFor_(ctx, r.id) };
+  return out;
 }
 
 // ---------------------------------------------------------------- ADMIN or TOKEN
@@ -443,22 +453,37 @@ function apiFile_(p, ctx) {
 /** api.php?action=poll */
 function apiPoll_(p, ctx) {
   requireAdmin_(p, ctx);
-  var rows = table_(ctx, 'permits').rows;
-  var pending = 0, max = 0;
-  rows.forEach(function (r) { if (r.status === 'pending') pending++; max = Math.max(max, Number(r.id) || 0); });
-  var out = { pending: pending, max_id: max, 'new': [] };
-  if (p.since !== undefined && p.since !== null && p.since !== '') {
-    var since = Number(p.since) || 0;
-    out['new'] = rows.filter(function (r) { return Number(r.id) > since; })
-      .sort(function (a, b) { return Number(a.id) - Number(b.id); }).slice(0, 10)
-      .map(function (r) { return { id: Number(r.id), permit_no: r.permit_no, requester_name: r.requester_name, location: r.location }; });
-  }
-  return out;
+  var hasSince = p.since !== undefined && p.since !== null && p.since !== '';
+  var since = hasSince ? Number(p.since) || 0 : null;
+  // Cheap while nothing changes: one cached value per (data version, since).
+  return cachedRead_(ctx, 'poll', { since: since }, function () {
+    var rows = table_(ctx, 'permits').rows;
+    var pending = 0, max = 0;
+    rows.forEach(function (r) { if (r.status === 'pending') pending++; max = Math.max(max, Number(r.id) || 0); });
+    var out = { pending: pending, max_id: max, 'new': [] };
+    if (hasSince) {
+      out['new'] = rows.filter(function (r) { return Number(r.id) > since; })
+        .sort(function (a, b) { return Number(a.id) - Number(b.id); }).slice(0, 10)
+        .map(function (r) { return { id: Number(r.id), permit_no: r.permit_no, requester_name: r.requester_name, location: r.location }; });
+    }
+    return { data: out, until: nowTs_() + WP_READ_CACHE_TTL }; // no clock-dependent fields
+  });
 }
 
 /** admin/dashboard.php aggregates. */
 function apiDashboard_(p, ctx) {
   var u = requireAdmin_(p, ctx);
+  // aggregates are the same for every admin: cached once, the user is added per request
+  var agg = cachedRead_(ctx, 'dashboard', null, function () {
+    return { data: dashboardAgg_(ctx), until: permitsValidUntil_(table_(ctx, 'permits').rows) };
+  });
+  return {
+    user: publicUser_(u), cnt: agg.cnt, byType: agg.byType,
+    days: agg.days, pending: agg.pending, activeNow: agg.activeNow
+  };
+}
+
+function dashboardAgg_(ctx) {
   var cnt = { pending: 0, approved: 0, rejected: 0, closed: 0, expired: 0 };
   var byType = {};
   workTypeKeys_().forEach(function (k) { byType[k] = 0; });
@@ -478,7 +503,7 @@ function apiDashboard_(p, ctx) {
     if (r.status === 'pending') pending.push(o);
   });
   return {
-    user: publicUser_(u), cnt: cnt, byType: byType,
+    cnt: cnt, byType: byType,
     days: dayKeys.map(function (k) { return { date: k, count: days[k] }; }),
     pending: pending.slice(0, 8), activeNow: activeNow.slice(0, 6)
   };
@@ -492,6 +517,12 @@ function apiPermits_(p, ctx) {
   var from = /^\d{4}-\d{2}-\d{2}$/.test(String(p.from || '')) ? p.from : '';
   var to = /^\d{4}-\d{2}-\d{2}$/.test(String(p.to || '')) ? p.to : '';
   var status = String(p.status || '');
+  return cachedRead_(ctx, 'permits', { q: q, type: type, from: from, to: to, status: status }, function () {
+    return { data: permitsList_(ctx, q, type, from, to, status), until: permitsValidUntil_(table_(ctx, 'permits').rows) };
+  });
+}
+
+function permitsList_(ctx, q, type, from, to, status) {
   var rows = permitsDesc_(ctx).filter(function (r) {
     if (q) {
       var hay = [r.permit_no, r.requester_name, r.requester_company, r.location, r.job_detail, r.owner_name].join('\n').toLowerCase();
@@ -513,8 +544,7 @@ function apiPermits_(p, ctx) {
 function apiSaveReview_(d, ctx) {
   requireAdmin_(d, ctx);
   return withLock_(function () {
-    ctx.tables = {};
-    ctx.user = null;
+    relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
     var u = requireAdmin_(d, ctx);
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
@@ -556,8 +586,7 @@ function apiDecide_(d, ctx) {
   var signFile = '';
   try {
     return withLock_(function () {
-      ctx.tables = {};
-      ctx.user = null;
+      relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
       var u = requireAdmin_(d, ctx);
       var t = table_(ctx, 'permits');
       var p = findById_(t, d.id);
@@ -643,8 +672,7 @@ function apiDelete_(d, ctx) {
   requireAdmin_(d, ctx);
   requireResetPassword_(d, 'delete');
   return withLock_(function () {
-    ctx.tables = {};
-    ctx.user = null;
+    relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
     var u = requireAdmin_(d, ctx);
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
@@ -704,8 +732,7 @@ function apiUpdatePermit_(d, ctx) {
   requireAdmin_(d, ctx);
   requireResetPassword_(d, 'update');
   return withLock_(function () {
-    ctx.tables = {};
-    ctx.user = null;
+    relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
     var u = requireAdmin_(d, ctx);
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
@@ -734,8 +761,7 @@ function apiResetData_(p, ctx) {
   requireResetPassword_(p, 'reset');
 
   return withLock_(function () {
-    ctx.tables = {}; // re-read fresh data now that we hold the lock
-    ctx.user = null;
+    relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
     u = requireAdmin_(p, ctx);
     var pt = table_(ctx, 'permits');
     var lt = table_(ctx, 'permit_logs');

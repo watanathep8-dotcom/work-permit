@@ -3,6 +3,7 @@
  *  2. single-source-of-truth check: docs/assets/js/data.js === apps-script/Data.gs
  *  3. syntax check of every frontend JS file and every inline <script> in docs/
  *  4. appsscript.json manifest sanity
+ *  5. browser transport (core.js: batching, fallback, read cache, hand-over) against the backend
  */
 'use strict';
 const fs = require('fs');
@@ -66,8 +67,17 @@ const cfg = fs.readFileSync(path.join(ROOT, 'docs', 'config.js'), 'utf8');
 if (/window\.WP_CONFIG\s*=\s*\{\s*apiUrl:\s*"(|https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec)"\s*\}/.test(cfg)) passed++;
 else failures.push('docs/config.js apiUrl must be "" or a script.google.com/macros/s/.../exec URL');
 
+// 5 ---------------------------------------------------------------------------
+(async () => {
+const t1 = Date.now();
+const fe = await require('./frontend.test.js')();
+passed += fe.passed;
+failures.push(...fe.failures);
+console.log(`frontend transport: ${fe.passed} passed, ${fe.failures.length} failed (${Date.now() - t1} ms)`);
+
 console.log(`\nTOTAL: ${passed} passed, ${failures.length} failed`);
 if (failures.length) {
   console.log('\nFAILURES:\n- ' + failures.join('\n- '));
   process.exit(1);
 }
+})();

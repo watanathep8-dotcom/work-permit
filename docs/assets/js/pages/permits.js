@@ -12,12 +12,14 @@
   form.type.innerHTML = '<option value="">ทุกลักษณะงาน</option>' + Object.entries(D.workTypes).map(([k, w]) => `<option value="${k}" ${f.type === k ? 'selected' : ''}>${E(w.short)}</option>`).join('');
   $('#reset').href = '?status=' + encodeURIComponent(f.status);
 
-  const r = await WP.api('permits', f);
   const tabs = (counts) => {
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     return `<a href="${qs({ status: '' })}" class="${f.status === '' ? 'active' : ''}"><i class="fa-solid fa-layer-group"></i> ทั้งหมด <em>${total}</em></a>` +
       Object.entries(D.status).map(([k, s]) => `<a href="${qs({ status: k })}" class="${f.status === k ? 'active' : ''}"><i class="fa-solid ${s.icon}"></i> ${s.label} <em>${counts[k] || 0}</em></a>`).join('');
   };
+  let bound = false;
+  // Painted at once from this tab's last copy (if any), then again only if the server's answer differs.
+  const render = r => {
   if (!r.ok) {
     $('#tabs').innerHTML = tabs({});
     $('#list').innerHTML = `<div class="card-b"><div class="alert err"><i class="fa-solid fa-triangle-exclamation"></i><div>${E(r.msg)}</div></div></div>`;
@@ -44,6 +46,8 @@
           <button type="button" class="btn sm danger" data-del="${x.id}" data-no="${E(x.permit_no)}" data-es="${E(x.es)}" title="ลบใบอนุญาต">🗑 ลบ</button></td>
       </tr>`).join('')}
   </tbody></table></div>`;
+  if (bound) return;
+  bound = true;
 
   // ---------- per-row delete (admin session + reset password, asked once per page) ----------
   $('#list').addEventListener('click', async e => {
@@ -65,4 +69,6 @@
     const blob = new Blob(['﻿' + out.join('\n')], { type: 'text/csv;charset=utf-8' });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'work-permits-' + WP.todayBkk() + '.csv'; a.click();
   };
+  };
+  await WP.swr('permits', f, render);
 })();

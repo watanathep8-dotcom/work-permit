@@ -162,7 +162,7 @@
     $('#submit').disabled = true;
     $('.step[data-step="3"] .s-lbl').textContent = 'ตรวจทาน & บันทึก';
     ['#rules-grid', '#agree-card', '#sig-card', '#attach-card'].forEach(s => $(s).classList.add('hide'));
-    const r = await WP.api('permit', { id: editId });
+    const r = await WP.read('permit', { id: editId }); // batched with the sidebar's me + poll
     if (!r.ok) {
       if (r.code === 'NOT_FOUND') { location.replace(`${WP.base}/admin/permits.html`); return; }
       top.className = 'alert err mb2';
@@ -240,9 +240,10 @@
         data.attachment = { name: f.name, mimeType: f.type || '', base64: String(url).slice(String(url).indexOf(',') + 1) };
       } catch { return Swal.fire({ icon: 'error', title: 'อ่านไฟล์แนบไม่สำเร็จ' }); }
     }
-    const r = await WP.api('submit', data);
+    const r = await WP.api('submit', Object.assign(data, { with_permit: true }));
     if (!r.ok) return Swal.fire({ icon: 'error', title: 'ส่งไม่สำเร็จ', text: r.msg });
     try { localStorage.removeItem(DKEY); } catch { }
+    WP.handoff(r.data.permit_no, r.data.token, r.data.view); // status page paints it without another round-trip
     location.href = `${WP.base}/status.html?no=${encodeURIComponent(r.data.permit_no)}&t=${r.data.token}&new=1`;
   };
 })();

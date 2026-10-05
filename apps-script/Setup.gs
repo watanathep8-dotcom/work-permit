@@ -99,6 +99,7 @@ function setupSystem() {
       }
     }
     SpreadsheetApp.flush();
+    bumpDataVersion_(); // cached reads must not survive a (re-)setup
 
     var result = {
       spreadsheetUrl: ss.getUrl(),

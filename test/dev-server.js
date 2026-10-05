@@ -2,6 +2,8 @@
  *
  *   node test/dev-server.js [port]            → docs/ + in-memory mocked Apps Script API at /api
  *   node test/dev-server.js [port] --no-api   → docs/ exactly as shipped (apiUrl empty → Thai banner)
+ *   node test/dev-server.js [port] --latency=2000 → delay every API response (feel the real Apps Script round-trip)
+ *   GET /__api-log[?reset=1]                  → API calls made so far (to count round-trips per page view)
  *
  * With the mock API, config.js is rewritten on the fly to point at /api and the
  * backend is set up with the test-only admin + reset passwords below (in-memory, lost on exit).
@@ -16,6 +18,8 @@ const DEV_ADMIN_PASSWORD = 'dev-admin-pass'; // test fixture for the in-memory m
 const DEV_RESET_PASSWORD = 'dev-reset-pass'; // test fixture (Script Property WP_RESET_PASSWORD) for the mock only
 const port = Number(process.argv[2]) || 8765;
 const noApi = process.argv.includes('--no-api');
+const latencyArg = process.argv.find((a) => a.startsWith('--latency='));
+const LATENCY = latencyArg ? Number(latencyArg.split('=')[1]) || 0 : 0; // simulate Apps Script round-trip time (ms)
 const DOCS = path.join(__dirname, '..', 'docs');
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml' };
 
@@ -29,17 +33,36 @@ if (!noApi) {
   gas.propStore.WP_RESET_PASSWORD = DEV_RESET_PASSWORD; // enables reset / edit / delete in the preview
 }
 
+// Request log for measuring round-trips per page view: GET /__api-log (?reset=1 clears it).
+const apiLog = [];
+const describe = (method, body, params) => {
+  let a = '';
+  try { a = method === 'POST' ? JSON.parse(body || '{}') : params; } catch { return method + ' ?'; }
+  const sub = Array.isArray(a.calls) ? '[' + a.calls.map((c) => c && c.action).join(',') + ']' : '';
+  return method + ' ' + String(a.action || '') + sub;
+};
+
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
+  if (gas && url.pathname === '/__api-log') {
+    const out = JSON.stringify(apiLog);
+    if (url.searchParams.get('reset')) apiLog.length = 0;
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+    res.end(out);
+    return;
+  }
   if (gas && url.pathname === '/api') {
     let body = '';
     req.on('data', (c) => { body += c; });
     req.on('end', () => {
+      apiLog.push({ t: Date.now(), call: describe(req.method, body, Object.fromEntries(url.searchParams)) });
       const out = req.method === 'POST'
         ? gas.context.doPost({ postData: { contents: body } })
         : gas.context.doGet({ parameter: Object.fromEntries(url.searchParams) });
-      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-      res.end(out.getContent());
+      setTimeout(() => {
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        res.end(out.getContent());
+      }, LATENCY);
     });
     return;
   }

@@ -23,8 +23,12 @@
   $('#remarks').innerHTML = D.remarks.map(r => `<li>${E(r)}</li>`).join('');
   WP.reveal(); WP.tilt();
 
-  WP.get('stats').then(r => {
+  // Public aggregate counters: painted at once from this tab's last copy (if any),
+  // then counted on to the server's numbers when they differ.
+  let last = null;
+  WP.swr('stats', {}, r => {
     if (!r.ok) return;
-    ['total', 'approved', 'pending', 'today'].forEach(k => WP.countUp($('#st-' + k), +r.data[k] || 0));
-  });
+    ['total', 'approved', 'pending', 'today'].forEach(k => WP.countUp($('#st-' + k), +r.data[k] || 0, last ? 900 : 1400, last ? +last[k] || 0 : 0));
+    last = r.data;
+  }, { anon: true, fetch: () => WP.get('stats') });
 })();

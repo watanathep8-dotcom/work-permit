@@ -88,4 +88,5 @@ node tools/sync-data.js
 node test/run.js                     # ทดสอบ backend แบบ end-to-end (mock) + ตรวจ syntax หน้าเว็บ
 node test/dev-server.js 8765         # เปิด docs/ พร้อม API จำลองที่ http://localhost:8765/ (admin / dev-admin-pass)
 node test/dev-server.js 8765 --no-api  # เปิด docs/ ตามที่ส่งจริง (apiUrl ว่าง)
+node test/dev-server.js 8765 --latency=2000  # จำลองความหน่วงของ Apps Script (~2 วินาที/คำขอ); GET /__api-log นับจำนวนคำขอ API
 ```

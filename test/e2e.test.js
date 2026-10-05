@@ -474,6 +474,194 @@ module.exports = function run() {
   check('after reset: tracking lockout of reused number cleared', post({ action: 'track', permit_no: P5.permit_no, phone: '0812345678' }).ok);
   check('after reset: second submit 002', post(Object.assign(base(), { attachment: null })).data.permit_no === 'WP-20261006-002');
 
+  // ================================================================ speed: batch / read cache / data version
+  setNow('2026-10-06T10:00:00');
+  S = post({ action: 'login', username: 'admin', password: 'Brand-New-1' }).data.session;
+  const dvNow = () => (gas.cacheStore.get('wpdv') || {}).v;
+  const clearReadCache = () => { [...gas.cacheStore.keys()].forEach((k) => { if (k.startsWith('wpc_')) gas.cacheStore.delete(k); }); };
+  const readsOf = (fn) => {
+    const before = Object.assign({}, gas.stats.sheetReads);
+    const out = fn();
+    const d = {};
+    Object.keys(gas.stats.sheetReads).forEach((k) => { const n = gas.stats.sheetReads[k] - (before[k] || 0); if (n) d[k] = n; });
+    return { out, reads: d };
+  };
+  const READS = () => [
+    ['stats', () => get({ action: 'stats' })],
+    ['dashboard', () => post({ action: 'dashboard', session: S })],
+    ['permits', () => post({ action: 'permits', session: S })],
+    ['permits pending', () => post({ action: 'permits', session: S, status: 'pending' })],
+    ['permits expired', () => post({ action: 'permits', session: S, status: 'expired' })],
+    ['permits q', () => post({ action: 'permits', session: S, q: 'ห้อง' })],
+    ['poll', () => post({ action: 'poll', session: S })],
+    ['poll since 0', () => post({ action: 'poll', session: S, since: 0 })],
+    ['users', () => post({ action: 'users', session: S })]
+  ];
+  const warm = () => READS().forEach(([, fn]) => fn());
+  // Every read (served from cache when possible) must equal a freshly computed one.
+  const consistent = (label) => {
+    const now = READS().map(([, fn]) => JSON.stringify(fn()));
+    clearReadCache();
+    const fresh = READS().map(([, fn]) => JSON.stringify(fn()));
+    READS().forEach(([n], i) => check(`cache consistent after ${label}: ${n}`, now[i] === fresh[i] && JSON.parse(fresh[i]).ok, { now: now[i], fresh: fresh[i] }));
+  };
+  const write = (label, fn, expectOk = true) => {
+    warm();
+    const dv = dvNow();
+    const x = fn();
+    if (expectOk) check(label + ' ok', x.ok, x);
+    check('data version replaced by ' + label, dvNow() && dvNow() !== dv);
+    consistent(label);
+    return x;
+  };
+
+  // read cache is really used: a repeated dashboard / permits / poll / stats reads no permit data
+  clearReadCache();
+  post({ action: 'dashboard', session: S });
+  check('cached dashboard: only the users sheet is read (session check)', JSON.stringify(readsOf(() => post({ action: 'dashboard', session: S })).reads) === '{"users":1}');
+  post({ action: 'permits', session: S });
+  check('cached permits list: only users read', JSON.stringify(readsOf(() => post({ action: 'permits', session: S })).reads) === '{"users":1}');
+  post({ action: 'poll', session: S, since: 2 });
+  check('cached poll: only users read', JSON.stringify(readsOf(() => post({ action: 'poll', session: S, since: 2 })).reads) === '{"users":1}');
+  get({ action: 'stats' });
+  check('cached stats: no sheet read', JSON.stringify(readsOf(() => get({ action: 'stats' })).reads) === '{}');
+  check('cached poll still refuses a bogus session', post({ action: 'poll', session: '0'.repeat(64), since: 2 }).code === 'AUTH');
+  check('cached dashboard still refuses anonymous', post({ action: 'dashboard' }).code === 'AUTH');
+
+  // submit (+ with_permit → status page data in the same round-trip)
+  r = write('submit', () => post(Object.assign(base(), {
+    attachment: null, work_types: ['hot', 'general'], work_date: '2026-10-06', time_from: '09:00', time_to: '11:00',
+    requester_name: "'อัญประกาศ", location: '=1+1 ห้อง', with_permit: true
+  })));
+  const P6 = r.data;
+  const v6 = post({ action: 'permit', no: P6.permit_no, t: P6.token }).data;
+  check('submit with_permit: view === permit(no, t)', JSON.stringify(P6.view) === JSON.stringify(v6), { view: P6.view, permit: v6 });
+  check('submit without with_permit: same output as before (no view)', !('view' in post(Object.assign(base(), { attachment: null })).data));
+  r = post({ action: 'track', permit_no: P6.permit_no, phone: '0812345678', with_permit: true });
+  check('track with_permit: view === permit(no, t)', r.ok && r.data.token === P6.token && JSON.stringify(r.data.view) === JSON.stringify(v6), r);
+  r = post({ action: 'track', permit_no: P6.permit_no, phone: '0812345678' });
+  check('track without with_permit: unchanged output', r.ok && Object.keys(r.data).join() === 'permit_no,token', r);
+  check('track with_permit wrong phone → NOT_FOUND', post({ action: 'track', permit_no: P6.permit_no, phone: '000', with_permit: true }).code === 'NOT_FOUND');
+
+  // save_review / approve
+  write('save_review', () => post({ action: 'save_review', session: S, id: P6.id, log: true, checklist: { h1: true }, inspections: { owner: { before: { name: 'ก' } } } }));
+  write('decide approve', () => post({ action: 'decide', session: S, id: P6.id, decision: 'approve', sign: SIG }));
+  check('approved permit in dashboard activeNow', post({ action: 'dashboard', session: S }).data.activeNow.some((x) => x.id === P6.id));
+
+  // the clock alone (no write) turns a cached "approved" into "expired"
+  warm();
+  setNow('2026-10-06T11:01:00');
+  const d11 = post({ action: 'dashboard', session: S }).data;
+  check('cached dashboard follows expiry by the clock', !d11.activeNow.some((x) => x.id === P6.id) && post({ action: 'permits', session: S, status: 'expired' }).data.rows.some((x) => x.id === P6.id), d11);
+  consistent('expiry time passed');
+
+  write('decide reject', () => post({ action: 'decide', session: S, id: 2, decision: 'reject', comment: 'ไม่ครบ' }));
+  write('decide close', () => post({ action: 'decide', session: S, id: P6.id, decision: 'close' }));
+  write('failed write (unknown permit)', () => post({ action: 'decide', session: S, id: 999, decision: 'close' }), false);
+  write('update_permit', () => post(editBody({ id: P6.id, location: 'ห้องใหม่' })));
+  check('update_permit visible in cached list', post({ action: 'permits', session: S, q: 'ห้องใหม่' }).data.rows.length === 1);
+  write('user_save', () => post({ action: 'user_save', session: S, id: 1, fullname: 'ผู้ดูแลระบบ จป. (ใหม่)', position: 'จป.', password: '' }));
+  check('user_save visible in dashboard', post({ action: 'dashboard', session: S }).data.user.fullname === 'ผู้ดูแลระบบ จป. (ใหม่)');
+  write('user_toggle off', () => post({ action: 'user_toggle', session: S, id: 2 }));
+  write('user_toggle on', () => post({ action: 'user_toggle', session: S, id: 2 }));
+  write('delete', () => post({ action: 'delete', session: S, id: P6.id, resetPassword: RESET_PW }));
+  check('deleted permit gone from cached list', !post({ action: 'permits', session: S }).data.rows.some((x) => x.id === P6.id));
+
+  // ---- batch: same output as single calls, one read per sheet
+  const P7 = post(Object.assign(base(), { attachment: null, work_date: '2026-10-06' })).data;
+  const calls = [{ action: 'me' }, { action: 'poll' }, { action: 'poll', since: 1 }, { action: 'dashboard' }, { action: 'permits', status: 'pending', q: 'ห้อง' },
+    { action: 'users' }, { action: 'permit', id: P7.id, signs: true }, { action: 'stats' }];
+  const singles = calls.map((c) => post(Object.assign({ session: S }, c)));
+  clearReadCache();
+  const b1 = readsOf(() => post({ action: 'batch', session: S, calls }));
+  check('batch ok with one result per call', b1.out.ok && b1.out.data.length === calls.length, b1.out);
+  check('batch results === single calls', b1.out.ok && b1.out.data.every((x, i) => JSON.stringify(x) === JSON.stringify(singles[i])), { batch: b1.out.data, singles });
+  check('batch reads each sheet once', JSON.stringify(b1.reads) === '{"users":1,"permits":1,"permit_logs":1}', b1.reads);
+  r = post({ action: 'batch', calls: [{ action: 'me' }, { action: 'dashboard' }, { action: 'stats' }] });
+  check('batch without session: admin sub-calls AUTH, public ok', r.ok && r.data[0].code === 'AUTH' && r.data[1].code === 'AUTH' && r.data[2].ok, r);
+  r = post({ action: 'batch', calls: [{ action: 'me', session: S }, { action: 'permits', session: S }] });
+  check('batch sub-call cannot carry its own session', r.data.every((x) => x.code === 'AUTH'), r);
+  r = post({ action: 'batch', session: '0'.repeat(64), calls: [{ action: 'poll' }] });
+  check('batch with bogus session → AUTH', r.data[0].code === 'AUTH', r);
+  const before7 = rowOf(P7.id), logs7 = logRows(), files7 = gas.files.size;
+  r = post({
+    action: 'batch', session: S, calls: [
+      { action: 'decide', id: P7.id, decision: 'approve', sign: SIG }, { action: 'save_review', id: P7.id }, { action: 'delete', id: P7.id, resetPassword: RESET_PW },
+      { action: 'update_permit', id: P7.id, resetPassword: RESET_PW }, { action: 'submit' }, { action: 'login', username: 'admin', password: 'Brand-New-1' },
+      { action: 'file', id: P7.id }, { action: 'batch', calls: [{ action: 'me' }] }]
+  });
+  check('batch refuses writes / login / file / nested batch', r.ok && r.data.every((x) => !x.ok && x.code === 'NOT_FOUND'), r);
+  check('refused batch changed nothing', rowOf(P7.id) === before7 && logRows() === logs7 && gas.files.size === files7);
+  r = post({ action: 'batch', session: S, calls: [{ action: 'reset_data', resetPassword: RESET_PW }, { action: 'user_toggle', id: 2 }, { action: 'user_save', id: 1, fullname: 'x' }, { action: 'track', permit_no: P7.permit_no, phone: '0812345678' }] });
+  check('batch refuses reset / user changes / track', r.data.every((x) => x.code === 'NOT_FOUND') && post({ action: 'permits', session: S }).data.rows.length > 0, r);
+  check('batch: empty / too many calls refused', post({ action: 'batch', session: S, calls: [] }).code === 'BAD_REQUEST' && post({ action: 'batch', session: S, calls: Array(9).fill({ action: 'me' }) }).code === 'BAD_REQUEST' && post({ action: 'batch', session: S }).code === 'BAD_REQUEST');
+  check('batch via GET refused', !get({ action: 'batch', calls: '[]' }).ok);
+  r = post({ action: 'batch', calls: [{ action: 'permit', no: P7.permit_no, t: P7.token }, { action: 'permit', no: P7.permit_no, t: P6.token }, { action: 'permit', id: P7.id }] });
+  check('batch token permit: own permit only, by id needs session', r.data[0].ok && r.data[0].data.permit.id === P7.id && r.data[1].code === 'NOT_FOUND' && r.data[2].code === 'AUTH', r);
+
+  // ---- a requester token never sees cached admin data
+  warm();
+  const tokens = [P5, P6, P7].map((x) => x.token);
+  const cachedVals = [...gas.cacheStore.entries()].filter(([k]) => k.startsWith('wpc_')).map(([, e]) => e.v).join('\n');
+  check('read cache holds no tracking tokens, signatures, files or password data', cachedVals.length > 0 && !tokens.some((t) => cachedVals.includes(t)) &&
+    !/data:image|base64|password_hash|"salt"/.test(cachedVals));
+  // poison every cached value: token reads must be unaffected (they never consult the cache)
+  [...gas.cacheStore.keys()].filter((k) => k.startsWith('wpc_') && !/\.\d+$/.test(k)).forEach((k) => {
+    gas.cacheStore.get(k).v = '1';
+    gas.cacheStore.set(k + '.0', { v: JSON.stringify({ u: 9e12, d: 'POISON' }), exp: gas.clock.now() + 60000 });
+  });
+  check('poisoned cache is what cached reads return (sanity)', get({ action: 'stats' }).data === 'POISON');
+  r = post({ action: 'permit', no: P7.permit_no, t: P7.token, signs: true });
+  check('token permit read ignores the cache', r.ok && r.data.permit.id === P7.id && !JSON.stringify(r.data).includes('POISON'), r);
+  r = post({ action: 'track', permit_no: P7.permit_no, phone: '0812345678', with_permit: true });
+  check('track ignores the cache', r.ok && r.data.view.permit.id === P7.id && !JSON.stringify(r.data).includes('POISON'), r);
+  check('token file read ignores the cache', post({ action: 'file', no: P7.permit_no, t: P7.token }).code === 'NOT_FOUND');
+  check('admin permit by id ignores the cache', post({ action: 'permit', session: S, id: P7.id }).data.permit.permit_no === P7.permit_no);
+  check('poisoned cache still needs a session', post({ action: 'dashboard' }).code === 'AUTH' && post({ action: 'permits', no: P7.permit_no, t: P7.token }).code === 'AUTH');
+  clearReadCache();
+
+  // ---- writes keep the pre-lock users sheet only if nothing was written meanwhile
+  const usersSheet = ss.getSheetByName('users');
+  const uhdr = usersSheet.getRange(1, 1, 1, G.WP_SCHEMA.users.length).getValues()[0];
+  const setActive = (uid, v) => usersSheet.getRange(1 + uid, uhdr.indexOf('active') + 1).setValues([[v]]);
+  const S2d = post({ action: 'login', username: 'safety2', password: 'new-pass-2' }).data.session;
+  r = readsOf(() => post({ action: 'save_review', session: S2d, id: P7.id, checklist: {} }));
+  check('write reads each sheet once (users kept across the lock)', r.out.ok && JSON.stringify(r.reads) === '{"users":1,"permits":1}', r);
+  const lk = G.LockService.getScriptLock(), origTry = lk.tryLock;
+  lk.tryLock = function () { // another request disables safety2 while this one waits for the lock
+    lk.tryLock = origTry;
+    gas.stats.unlockedWrites--; // simulated concurrent write (it held its own lock)
+    setActive(2, '0');
+    G.bumpDataVersion_();
+    return origTry.apply(this, arguments);
+  };
+  const before7b = rowOf(P7.id);
+  r = post({ action: 'save_review', session: S2d, id: P7.id, checklist: { h1: true } });
+  check('session re-checked against fresh users after a concurrent write', r.code === 'AUTH' && rowOf(P7.id) === before7b, r);
+  gas.stats.unlockedWrites--;
+  setActive(2, '1');
+  G.bumpDataVersion_();
+
+  // ---- reset + "today" rolls over at midnight without any write
+  write('reset_data', () => post({ action: 'reset_data', session: S, resetPassword: RESET_PW }));
+  write('submit after reset', () => post(Object.assign(base(), { attachment: null, work_date: '2026-10-06' })));
+  warm();
+  check('stats today counted', get({ action: 'stats' }).data.today === 1);
+  setNow('2026-10-07T00:00:30');
+  S = post({ action: 'login', username: 'admin', password: 'Brand-New-1' }).data.session;
+  check('cached stats roll over at Bangkok midnight', get({ action: 'stats' }).data.today === 0 && get({ action: 'stats' }).data.total === 1);
+  check('cached dashboard days roll over at midnight', post({ action: 'dashboard', session: S }).data.days[13].date === '2026-10-07');
+  consistent('midnight');
+
+  // ---- big values are chunked under the 100 KB CacheService limit
+  const bigV = 'ก'.repeat(70000);
+  G.cachePutBig_('wpc_test_big', bigV, 60);
+  check('big cache value stored in chunks and read back', G.cacheGetBig_('wpc_test_big') === bigV && gas.cacheStore.has('wpc_test_big.2'));
+  gas.cacheStore.delete('wpc_test_big.1');
+  check('missing chunk → miss', G.cacheGetBig_('wpc_test_big') === null);
+  G.cachePutBig_('wpc_test_huge', 'x'.repeat(30000 * 21), 60);
+  check('value over the chunk budget is not cached', G.cacheGetBig_('wpc_test_huge') === null);
+
   // ================================================================ invariants
   check('every sheet write happened under LockService', gas.stats.unlockedWrites === 0, gas.stats.unlockedWrites);
   check('no server errors logged', !gas.logs.some((l) => l.startsWith('ERROR')), gas.logs.filter((l) => l.startsWith('ERROR')));

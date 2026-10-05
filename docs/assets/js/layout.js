@@ -124,8 +124,9 @@
   };
 
   // Refresh the sidebar name/position from the server (also validates the session).
+  // WP.read: goes out together with the page's own data in one batched round-trip.
   if (layout === 'admin') {
-    WP.api('me').then(r => {
+    WP.read('me').then(r => {
       if (!r.ok) return;
       WP.updateSessionUser(r.data);
       const n = document.getElementById('me-name'), p = document.getElementById('me-pos');

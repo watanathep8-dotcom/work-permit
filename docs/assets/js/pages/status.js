@@ -6,7 +6,10 @@
   const root = $('#status-root');
   if (!WP.apiUrl) { root.innerHTML = ''; return; }
 
-  const r = await WP.api('permit', { no, t });
+  // Coming straight from track / submit: that answer already carries this page's data.
+  const handed = WP.takeHandoff(no, t);
+  const r = handed ? { ok: true, data: handed, msg: '' } : await WP.api('permit', { no, t });
+  await WP.ready; // deferred libraries (QR code, confetti, SweetAlert) are loaded
   if (!r.ok) {
     if (r.code === 'NOT_FOUND') { location.replace(WP.base + '/track.html?nf=1'); return; }
     root.innerHTML = `<div class="alert err"><i class="fa-solid fa-triangle-exclamation"></i><div>${E(r.msg)}</div></div>`;
