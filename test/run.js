@@ -62,7 +62,9 @@ const man = JSON.parse(fs.readFileSync(path.join(ROOT, 'appsscript.json'), 'utf8
 if (man.timeZone === 'Asia/Bangkok' && man.runtimeVersion === 'V8' && man.webapp.executeAs === 'USER_DEPLOYING' && man.webapp.access === 'ANYONE_ANONYMOUS') passed++;
 else failures.push('appsscript.json manifest settings');
 const cfg = fs.readFileSync(path.join(ROOT, 'docs', 'config.js'), 'utf8');
-if (/window\.WP_CONFIG\s*=\s*\{\s*apiUrl:\s*""\s*\}/.test(cfg)) passed++; else failures.push('docs/config.js must ship with apiUrl: ""');
+// Either unconfigured (apiUrl: "") or pointing at a deployed Apps Script web app.
+if (/window\.WP_CONFIG\s*=\s*\{\s*apiUrl:\s*"(|https:\/\/script\.google\.com\/macros\/s\/[\w-]+\/exec)"\s*\}/.test(cfg)) passed++;
+else failures.push('docs/config.js apiUrl must be "" or a script.google.com/macros/s/.../exec URL');
 
 console.log(`\nTOTAL: ${passed} passed, ${failures.length} failed`);
 if (failures.length) {
