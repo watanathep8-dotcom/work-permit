@@ -77,7 +77,8 @@
   </div>
   <div class="actions">
     <a class="btn ghost" href="../print.html?id=${p.id}" target="_blank"><i class="fa-solid fa-print"></i> พิมพ์</a>
-    <button class="btn-icon" id="btn-del" title="ลบใบอนุญาต" style="color:var(--red)"><i class="fa-solid fa-trash-can"></i></button>
+    <a class="btn ghost" id="btn-edit" href="../request.html?edit=${p.id}" title="แก้ไขข้อมูลที่ผู้ขอกรอก (ต้องใช้รหัสผ่าน Reset password)">✏️ แก้ไข</a>
+    <button class="btn danger" id="btn-del" title="ลบใบอนุญาต (ต้องใช้รหัสผ่าน Reset password)">🗑 ลบ</button>
   </div>
 </div>
 
@@ -188,9 +189,6 @@
     if (await decide('close', x.value)) { WP.celebrate(); setTimeout(() => location.reload(), 1500); }
   });
   $('#btn-del').onclick = async () => {
-    const x = await Swal.fire({ icon: 'warning', title: 'ลบใบอนุญาตนี้ถาวร?', text: 'ไม่สามารถกู้คืนได้', showCancelButton: true, confirmButtonText: 'ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#dc2626' });
-    if (!x.isConfirmed) return;
-    const y = await WP.api('delete', { id: P.id });
-    if (y.ok) location.href = 'permits.html'; else Swal.fire({ icon: 'error', title: y.msg });
+    if (await WP.deletePermit(P.id, p.permit_no)) location.href = 'permits.html';
   };
 })();

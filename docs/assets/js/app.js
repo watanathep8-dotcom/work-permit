@@ -301,6 +301,46 @@
     return rows;
   };
 
+  // ---------- Admin: actions guarded by the reset password (edit / delete) ----------
+  // The password (Script Property WP_RESET_PASSWORD) is asked once and kept in
+  // memory for this page only; it is forgotten on a password error / lockout.
+  let resetPw = null;
+  WP.withResetPassword = async (action, data, title = 'ยืนยันด้วยรหัสผ่าน') => {
+    let pw = resetPw;
+    if (!pw) {
+      const x = await Swal.fire({
+        icon: 'warning', title, text: 'กรอกรหัสผ่านสำหรับแก้ไข / ลบข้อมูล (Reset password)',
+        input: 'password', inputAttributes: { autocomplete: 'off', autocapitalize: 'off' },
+        inputValidator: v => !v && 'กรุณากรอกรหัสผ่าน',
+        showCancelButton: true, confirmButtonText: 'ยืนยัน', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#dc2626'
+      });
+      if (!x.isConfirmed || !x.value) return null;
+      pw = x.value;
+    }
+    Swal.fire({ title: 'กำลังบันทึก...', showConfirmButton: false, allowOutsideClick: false, didOpen: () => Swal.showLoading() });
+    const r = await WP.api(action, Object.assign({}, data, { resetPassword: pw }));
+    // The server checks the password before validating anything else, so a
+    // validation / not-found error still means the password was right.
+    if (r.ok || ['BAD_REQUEST', 'TOO_LARGE', 'NOT_FOUND'].includes(r.code)) resetPw = pw;
+    else if (['AUTH_FAILED', 'LOCKED', 'SETUP'].includes(r.code)) resetPw = null;
+    return r;
+  };
+  /** Confirm (naming the permit no), ask the reset password, delete. Resolves true when deleted. */
+  WP.deletePermit = async (id, permitNo) => {
+    const no = WP.esc(permitNo);
+    const c = await Swal.fire({
+      icon: 'warning', title: `ลบใบอนุญาต ${permitNo}?`,
+      html: `ใบอนุญาตเลขที่ <b>${no}</b> พร้อมประวัติการดำเนินการ ลายเซ็น และไฟล์แนบ จะถูกลบ<br>ลิงก์ติดตามสถานะของใบนี้จะใช้ไม่ได้อีก<br><b style="color:#ef4444">ไม่สามารถกู้คืนได้</b>`,
+      showCancelButton: true, focusCancel: true, confirmButtonText: '🗑 ลบ', cancelButtonText: 'ยกเลิก', confirmButtonColor: '#dc2626'
+    });
+    if (!c.isConfirmed) return false;
+    const r = await WP.withResetPassword('delete', { id }, `ยืนยันการลบ ${permitNo}`);
+    if (!r) return false;
+    if (!r.ok) { await Swal.fire({ icon: 'error', title: 'ลบไม่สำเร็จ', text: r.msg }); return false; }
+    await Swal.fire({ icon: 'success', title: `ลบใบอนุญาต ${permitNo} แล้ว`, timer: 1300, showConfirmButton: false });
+    return true;
+  };
+
   // ---------- Admin: clock, sidebar, polling ----------
   const clk = $('#live-clock');
   if (clk) {

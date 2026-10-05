@@ -286,8 +286,28 @@ function apiStats_(p, ctx) {
   return s;
 }
 
-/** api.php?action=submit — anonymous, like the original. */
-function apiSubmit_(d) {
+/**
+ * Request-form fields a requester keys in (submit) and the จป. admin may later
+ * correct (update_permit). Never permit_no / token / status / approvals /
+ * inspections / signatures / attachment / logs.
+ */
+var WP_REQUEST_FIELDS = {
+  company: 'บริษัท (พื้นที่)', permit_type: 'ประเภท', work_types: 'ลักษณะงาน',
+  work_date: 'วันที่ปฏิบัติงาน', time_from: 'เวลาเริ่ม', time_to: 'เวลาสิ้นสุด',
+  requester_title: 'คำนำหน้า', requester_name: 'ชื่อผู้ขออนุญาต', requester_company: 'บริษัท/หน่วยงานผู้ขอ',
+  requester_phone: 'เบอร์โทรผู้ขอ', worker_count: 'จำนวนผู้ปฏิบัติงาน', workers: 'รายชื่อผู้ปฏิบัติงาน',
+  owner_name: 'ผู้รับผิดชอบงานโครงการ', owner_phone: 'เบอร์โทรผู้รับผิดชอบ', job_detail: 'รายละเอียดงาน',
+  location: 'สถานที่ปฏิบัติงาน', checklist: 'รายการตรวจสอบความปลอดภัย', loto: 'Lock Out / Tag Out',
+  confined: 'ที่อับอากาศ (FM-EMR-46)'
+};
+
+/**
+ * Validates + sanitizes the request-form fields exactly as submit does and
+ * returns the sheet cell values (keys of WP_REQUEST_FIELDS). Throws on invalid input.
+ * `keep` (update only): existing row — the optional checklist / LOTO / confined
+ * sections are kept when the caller does not send them.
+ */
+function cleanRequestFields_(d, keep) {
   var WT = WP_DATA.workTypes;
   var types = (Array.isArray(d.work_types) ? d.work_types : []).filter(function (t, i, a) {
     return typeof t === 'string' && Object.prototype.hasOwnProperty.call(WT, t) && a.indexOf(t) === i;
@@ -299,27 +319,42 @@ function apiSubmit_(d) {
   ['time_from', 'time_to'].forEach(function (k) { if (!/^\d{2}:\d{2}$/.test(String(d[k] || ''))) fail_('เวลาไม่ถูกต้อง'); });
   var req = { requester_name: 'ชื่อผู้ขออนุญาต', requester_company: 'บริษัท/หน่วยงาน', requester_phone: 'เบอร์โทรศัพท์', owner_name: 'ผู้รับผิดชอบงานโครงการ', location: 'สถานที่ปฏิบัติงาน', job_detail: 'รายละเอียดงาน' };
   Object.keys(req).forEach(function (k) { if (str_(d[k]) === '') fail_('กรุณากรอก ' + req[k]); });
-  var reqSign = checkSignature_(d.requester_sign);
-  if (!reqSign) fail_('กรุณาลงลายมือชื่อผู้ขออนุญาต');
-  var ownSign = checkSignature_(d.owner_sign);
   var workers = cleanWorkers_(d.workers);
-  var att = checkAttachment_(d.attachment);
-
-  var row = {
+  var given = function (k) { return !keep || (d[k] !== undefined && d[k] !== null); };
+  var confined = '';
+  if (types.indexOf('confined') >= 0) {
+    confined = given('confined') ? JSON.stringify(cleanConfined_(d.confined))
+      : JSON.stringify(cleanConfined_(jdec_(keep.confined, {})));
+  }
+  var f = {
     company: d.company, permit_type: d.permit_type, work_types: JSON.stringify(types),
     work_date: d.work_date, time_from: d.time_from, time_to: d.time_to,
     requester_title: str_(d.requester_title, 20), requester_name: str_(d.requester_name, 150),
     requester_company: str_(d.requester_company, 200), requester_phone: str_(d.requester_phone, 30),
-    worker_count: workers.length, workers: JSON.stringify(workers),
+    worker_count: String(workers.length), workers: JSON.stringify(workers),
     owner_name: str_(d.owner_name, 150), owner_phone: str_(d.owner_phone, 30),
     job_detail: str_(d.job_detail, 5000), location: str_(d.location),
-    checklist: JSON.stringify(cleanChecklist_(d.checklist)), loto: JSON.stringify(cleanLoto_(d.loto)),
-    confined: types.indexOf('confined') >= 0 ? JSON.stringify(cleanConfined_(d.confined)) : '',
+    checklist: given('checklist') ? JSON.stringify(cleanChecklist_(d.checklist)) : JSON.stringify(cleanChecklist_(jdec_(keep.checklist, {}))),
+    loto: given('loto') ? JSON.stringify(cleanLoto_(d.loto)) : JSON.stringify(cleanLoto_(jdec_(keep.loto, []))),
+    confined: confined
+  };
+  // Fail on oversize cells (e.g. 200 very long worker rows) before touching Drive / the sheet.
+  Object.keys(f).forEach(function (h) { toCell_(f[h], h); });
+  return f;
+}
+
+/** api.php?action=submit — anonymous, like the original. */
+function apiSubmit_(d) {
+  var fields = cleanRequestFields_(d, null);
+  var reqSign = checkSignature_(d.requester_sign);
+  if (!reqSign) fail_('กรุณาลงลายมือชื่อผู้ขออนุญาต');
+  var ownSign = checkSignature_(d.owner_sign);
+  var att = checkAttachment_(d.attachment);
+
+  var row = Object.assign({}, fields, {
     inspections: '{}', status: 'pending',
     token: randomHex_(32), created_at: '', updated_at: ''
-  };
-  // Fail on oversize cells (e.g. 200 very long worker rows) before touching Drive.
-  WP_SCHEMA.permits.forEach(function (h) { toCell_(row[h], h); });
+  });
 
   var created = [];
   try {
@@ -562,13 +597,55 @@ function apiDecide_(d, ctx) {
   }
 }
 
-/** api.php?action=delete — removes the permit, its logs and its Drive files (to Drive trash). */
+// ---------------------------------------------------------------- RESET / DELETE / EDIT (admin + reset password)
+var WP_PROP_RESET_PASSWORD = 'WP_RESET_PASSWORD';
+var WP_RESET_MAX_FAIL = 10;
+var WP_RESET_FAIL_KEY = 'wprf_reset'; // one global counter (not per user), separate from login lockout
+
+/**
+ * Second factor for destructive / corrective admin actions (reset_data,
+ * delete, update_permit): the password stored only in Script Property
+ * WP_RESET_PASSWORD, sent as `resetPassword`. One shared failure counter:
+ * 10 wrong passwords lock all three actions for 15 minutes.
+ */
+var WP_RESET_WHAT = {
+  reset: { label: 'รหัสผ่านสำหรับรีเซ็ตข้อมูล', locked: 'ระงับการรีเซ็ต' },
+  'delete': { label: 'รหัสผ่านยืนยัน (Reset password) ', locked: 'ระงับการลบ/แก้ไข/รีเซ็ต' },
+  update: { label: 'รหัสผ่านยืนยัน (Reset password) ', locked: 'ระงับการลบ/แก้ไข/รีเซ็ต' }
+};
+function requireResetPassword_(p, what) {
+  var w = WP_RESET_WHAT[what] || WP_RESET_WHAT.update;
+  var expected = String(props_().getProperty(WP_PROP_RESET_PASSWORD) || '');
+  if (!expected) {
+    fail_('ยังไม่ได้ตั้งรหัสผ่านสำหรับรีเซ็ตข้อมูล กรุณาตั้งค่า Script Property "' + WP_PROP_RESET_PASSWORD +
+      '" ใน Apps Script (Project Settings > Script properties) ก่อน', 'SETUP');
+  }
+  var given = typeof p.resetPassword === 'string' ? p.resetPassword : '';
+  var cache = cache_();
+  var fails = Number(cache.get(WP_RESET_FAIL_KEY)) || 0;
+  if (fails >= WP_RESET_MAX_FAIL) {
+    fail_('กรอกรหัสผ่านรีเซ็ตผิดเกิน ' + WP_RESET_MAX_FAIL + ' ครั้ง ' + w.locked + 'ชั่วคราว 15 นาที', 'LOCKED');
+  }
+  // compare fixed-length digests so the comparison does not leak the length
+  if (!given || !safeEqual_(sha256Hex_(given), sha256Hex_(expected))) {
+    cache.put(WP_RESET_FAIL_KEY, String(fails + 1), WP_LOGIN_LOCK_SEC);
+    Utilities.sleep(1000);
+    fail_(w.label + 'ไม่ถูกต้อง', 'AUTH_FAILED');
+  }
+  cache.remove(WP_RESET_FAIL_KEY);
+}
+
+/**
+ * api.php?action=delete — removes the permit, its logs and its Drive files (to Drive trash).
+ * Requires an admin session AND the reset password.
+ */
 function apiDelete_(d, ctx) {
   requireAdmin_(d, ctx);
+  requireResetPassword_(d, 'delete');
   return withLock_(function () {
     ctx.tables = {};
     ctx.user = null;
-    requireAdmin_(d, ctx);
+    var u = requireAdmin_(d, ctx);
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
     if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
@@ -576,14 +653,74 @@ function apiDelete_(d, ctx) {
     var lt = table_(ctx, 'permit_logs');
     deleteRows_(lt, lt.rows.filter(function (l) { return Number(l.permit_id) === Number(p.id); }));
     deleteRows_(t, [p]);
-    return true;
+    cache_().remove('wptf_' + p.permit_no); // a reused number must not inherit the tracking lockout
+    console.log('WP delete permit ' + p.permit_no + ' (id ' + p.id + ') by ' + u.username + ' (' + u.fullname + ')');
+    return { id: Number(p.id), permit_no: p.permit_no };
   });
 }
 
-// ---------------------------------------------------------------- RESET (admin + reset password)
-var WP_PROP_RESET_PASSWORD = 'WP_RESET_PASSWORD';
-var WP_RESET_MAX_FAIL = 10;
-var WP_RESET_FAIL_KEY = 'wprf_reset'; // one global counter (not per user), separate from login lockout
+/** Cell equality; JSON cells compare by content (object key order ignored). */
+function sameValue_(a, b) {
+  a = String(a === undefined || a === null ? '' : a);
+  b = String(b === undefined || b === null ? '' : b);
+  if (a === b) return true;
+  var canon = function (s) {
+    var v;
+    try { v = JSON.parse(s); } catch (e) { return null; }
+    if (!v || typeof v !== 'object') return null;
+    // Blank values (false, '', unchecked items, empty LOTO rows) carry no
+    // information: the form sends every item while the stored JSON may be sparse.
+    var blank = function (x) {
+      return x === undefined || x === null || x === '' || x === false ||
+        (typeof x === 'object' && !(Array.isArray(x) ? x.length : Object.keys(x).length));
+    };
+    var norm = function (x) {
+      if (Array.isArray(x)) {
+        var arr = x.map(norm);
+        while (arr.length && blank(arr[arr.length - 1])) arr.pop();
+        return arr;
+      }
+      if (x && typeof x === 'object') {
+        var o = {};
+        Object.keys(x).sort().forEach(function (k) { var n = norm(x[k]); if (!blank(n)) o[k] = n; });
+        return o;
+      }
+      return x;
+    };
+    return JSON.stringify(norm(v));
+  };
+  var ca = canon(a), cb = canon(b);
+  return ca !== null && ca === cb;
+}
+
+/**
+ * update_permit — the จป. admin corrects what the requester keyed in.
+ * Only the request-form fields (WP_REQUEST_FIELDS) can change, validated exactly
+ * like submit; permit_no, token, status, approvals, inspections, signatures,
+ * attachment and logs are never touched (extra keys in the payload are ignored).
+ * Requires an admin session AND the reset password. Logs "แก้ไขข้อมูล".
+ */
+function apiUpdatePermit_(d, ctx) {
+  requireAdmin_(d, ctx);
+  requireResetPassword_(d, 'update');
+  return withLock_(function () {
+    ctx.tables = {};
+    ctx.user = null;
+    var u = requireAdmin_(d, ctx);
+    var t = table_(ctx, 'permits');
+    var p = findById_(t, d.id);
+    if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
+    var f = cleanRequestFields_(d, p);
+    var changed = Object.keys(WP_REQUEST_FIELDS).filter(function (k) { return !sameValue_(p[k], f[k]); });
+    if (!changed.length) return { changed: [], permit: permitOut_(p) };
+    changed.forEach(function (k) { p[k] = f[k]; });
+    p.updated_at = nowStr_();
+    writeRow_(t, p); // expiry (es / end_ts) is derived from work_date + times on every read
+    addLog_(ctx, p.id, 'edit', u.fullname, 'แก้ไขข้อมูล: ' + changed.map(function (k) { return WP_REQUEST_FIELDS[k]; }).join(', '));
+    return { changed: changed, permit: permitOut_(p) };
+  });
+}
+
 
 /**
  * reset_data — wipes all test data so the system can start over:
@@ -594,24 +731,7 @@ var WP_RESET_FAIL_KEY = 'wprf_reset'; // one global counter (not per user), sepa
  */
 function apiResetData_(p, ctx) {
   var u = requireAdmin_(p, ctx);
-  var expected = String(props_().getProperty(WP_PROP_RESET_PASSWORD) || '');
-  if (!expected) {
-    fail_('ยังไม่ได้ตั้งรหัสผ่านสำหรับรีเซ็ตข้อมูล กรุณาตั้งค่า Script Property "' + WP_PROP_RESET_PASSWORD +
-      '" ใน Apps Script (Project Settings > Script properties) ก่อน', 'SETUP');
-  }
-  var given = typeof p.resetPassword === 'string' ? p.resetPassword : '';
-  var cache = cache_();
-  var fails = Number(cache.get(WP_RESET_FAIL_KEY)) || 0;
-  if (fails >= WP_RESET_MAX_FAIL) {
-    fail_('กรอกรหัสผ่านรีเซ็ตผิดเกิน ' + WP_RESET_MAX_FAIL + ' ครั้ง ระงับการรีเซ็ตชั่วคราว 15 นาที', 'LOCKED');
-  }
-  // compare fixed-length digests so the comparison does not leak the length
-  if (!given || !safeEqual_(sha256Hex_(given), sha256Hex_(expected))) {
-    cache.put(WP_RESET_FAIL_KEY, String(fails + 1), WP_LOGIN_LOCK_SEC);
-    Utilities.sleep(1000);
-    fail_('รหัสผ่านสำหรับรีเซ็ตข้อมูลไม่ถูกต้อง', 'AUTH_FAILED');
-  }
-  cache.remove(WP_RESET_FAIL_KEY);
+  requireResetPassword_(p, 'reset');
 
   return withLock_(function () {
     ctx.tables = {}; // re-read fresh data now that we hold the lock
@@ -651,7 +771,7 @@ function apiResetData_(p, ctx) {
     });
     // Track-lockout counters of the removed permit numbers would otherwise hit the
     // new permits that reuse those numbers (numbering restarts at -001).
-    trackKeys.forEach(function (k) { cache.remove(k); });
+    trackKeys.forEach(function (k) { cache_().remove(k); });
     ctx.tables = {};
 
     var result = { permits_removed: permitsRemoved, logs_removed: logsRemoved, files_trashed: trashed, at: nowStr_(), by: u.fullname };

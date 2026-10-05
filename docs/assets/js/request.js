@@ -1,25 +1,34 @@
-// request.php wizard — ported; submits JSON (+ base64 attachment) to Google Apps Script
-(() => {
+// request.php wizard — ported; submits JSON (+ base64 attachment) to Google Apps Script.
+// Edit mode (request.html?edit=<id>, จป. admin layout): the same wizard pre-filled from
+// the permit, saved with action=update_permit (admin session + reset password).
+// Signatures, attachment, status and approvals are not part of the edit.
+(async () => {
+  if (WP.halt) return;
   const { $, $$ } = WP;
   const CFG = WP.data.config;
   const form = $('#wp-form');
+  const editId = WP.editMode ? +WP.qs('edit') || 0 : 0;
   let step = 0, pads = {}, lastTypes = '';
+  let initial = null; // edit mode: { checklist, loto, confined } of the permit being edited
+  let editNo = '';
   const panels = $$('.wz-panel'), stepEls = $$('.step');
 
-  // ---------- Draft autosave (per-browser convenience) ----------
+  // ---------- Draft autosave (per-browser convenience; not in edit mode) ----------
   const DKEY = 'wp_draft_v1';
-  const saveDraft = () => {
+  if (!editId) {
+    const saveDraft = () => {
+      try {
+        const d = {};
+        ['requester_name', 'requester_company', 'requester_phone', 'owner_name', 'owner_phone', 'location', 'job_detail'].forEach(n => d[n] = form[n].value);
+        localStorage.setItem(DKEY, JSON.stringify(d));
+      } catch { }
+    };
     try {
-      const d = {};
-      ['requester_name', 'requester_company', 'requester_phone', 'owner_name', 'owner_phone', 'location', 'job_detail'].forEach(n => d[n] = form[n].value);
-      localStorage.setItem(DKEY, JSON.stringify(d));
+      const d = JSON.parse(localStorage.getItem(DKEY) || 'null');
+      if (d) Object.entries(d).forEach(([k, v]) => { if (form[k] && !form[k].value) form[k].value = v; });
     } catch { }
-  };
-  try {
-    const d = JSON.parse(localStorage.getItem(DKEY) || 'null');
-    if (d) Object.entries(d).forEach(([k, v]) => { if (form[k] && !form[k].value) form[k].value = v; });
-  } catch { }
-  form.addEventListener('input', saveDraft);
+    form.addEventListener('input', saveDraft);
+  }
 
   // ---------- Workers ----------
   const wb = $('#workers tbody');
@@ -28,45 +37,50 @@
     const n = $$('tr', wb).filter(tr => $('input', tr).value.trim()).length;
     $('#worker-count').textContent = n;
   };
-  const addWorker = (focus = true) => {
+  const addWorker = (focus = true, w = {}) => {
     const tr = document.createElement('tr'); tr.className = 'row-in';
     tr.innerHTML = `<td></td><td><input class="input" data-w="name" placeholder="ชื่อ - นามสกุล"></td><td><input class="input" data-w="role" placeholder="เช่น ช่างเชื่อม / หัวหน้างาน"></td><td><input class="input" data-w="idno" placeholder="(ถ้ามี)"></td>
       <td><button type="button" class="btn-icon" title="ลบ"><i class="fa-solid fa-trash-can"></i></button></td>`;
+    $$('input', tr).forEach(i => { i.value = w[i.dataset.w] || ''; });
     $('button', tr).onclick = () => { tr.style.opacity = 0; tr.style.transform = 'translateX(30px)'; tr.style.transition = '.3s'; setTimeout(() => { tr.remove(); renumber(); }, 300); };
     $('input', tr).addEventListener('input', renumber);
     wb.appendChild(tr); renumber();
     if (focus) $('input', tr).focus();
   };
   $('#add-worker').onclick = () => addWorker();
-  addWorker(false); addWorker(false);
 
-  // ---------- Signatures ----------
-  $('#sig-area').innerHTML = WP.sigHTML('sig-req', 'ลงชื่อ ผู้ขออนุญาต (ผู้รับเหมา) <span class="req">*</span>') + WP.sigHTML('sig-own', 'ลงชื่อ ผู้รับผิดชอบงานโครงการ (ถ้าลงนามได้ทันที)');
-
-  // ---------- File ----------
+  // ---------- Signatures / File (new requests only) ----------
   const fileIn = $('#attach'), drop = $('#drop');
-  const showFile = () => { const f = fileIn.files[0]; $('#fname').innerHTML = f ? `<i class="fa-solid fa-file-circle-check" style="display:inline;font-size:16px;animation:none"></i> ${WP.esc(f.name)} (${(f.size / 1048576).toFixed(2)} MB)` : ''; };
-  fileIn.addEventListener('change', showFile);
-  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
-  ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
-  drop.addEventListener('drop', e => { if (e.dataTransfer.files.length) { fileIn.files = e.dataTransfer.files; showFile(); } });
+  if (!editId) {
+    $('#sig-area').innerHTML = WP.sigHTML('sig-req', 'ลงชื่อ ผู้ขออนุญาต (ผู้รับเหมา) <span class="req">*</span>') + WP.sigHTML('sig-own', 'ลงชื่อ ผู้รับผิดชอบงานโครงการ (ถ้าลงนามได้ทันที)');
+    const showFile = () => { const f = fileIn.files[0]; $('#fname').innerHTML = f ? `<i class="fa-solid fa-file-circle-check" style="display:inline;font-size:16px;animation:none"></i> ${WP.esc(f.name)} (${(f.size / 1048576).toFixed(2)} MB)` : ''; };
+    fileIn.addEventListener('change', showFile);
+    ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+    ['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+    drop.addEventListener('drop', e => { if (e.dataTransfer.files.length) { fileIn.files = e.dataTransfer.files; showFile(); } });
+  }
 
   // ---------- Steps ----------
   const types = () => $$('input[name=work_types]:checked').map(c => c.value);
   const buildChecklist = () => {
     const t = types(), key = t.join(',');
     if (key === lastTypes) return;
-    const prev = lastTypes ? WP.collectChecklist($('#checklist')) : {};
+    const prev = lastTypes ? WP.collectChecklist($('#checklist')) : (initial ? initial.checklist : {});
     lastTypes = key;
     WP.renderChecklist($('#checklist'), WP.defs, t, prev);
     const hasLoto = t.includes('electric');
     $('#loto-card').classList.toggle('hide', !hasLoto);
-    if (hasLoto && !$('#loto table')) WP.renderLoto($('#loto'));
+    if (hasLoto && !$('#loto table')) WP.renderLoto($('#loto'), initial ? initial.loto : []);
     const hasCs = t.includes('confined');
     $('#cs-card').classList.toggle('hide', !hasCs);
     if (hasCs && !$('#cs-box table')) {
-      const names = $$('#workers input[data-w=name]').map(i => i.value.trim()).filter(Boolean);
-      WP.renderConfined($('#cs-box'), { entries: names.map(name => ({ name })) }, false, false);
+      if (initial) {
+        // edit: full FM-EMR-46 record (gas / entries / renew / close) so nothing recorded later is lost
+        WP.renderConfined($('#cs-box'), initial.confined || {}, false, true);
+      } else {
+        const names = $$('#workers input[data-w=name]').map(i => i.value.trim()).filter(Boolean);
+        WP.renderConfined($('#cs-box'), { entries: names.map(name => ({ name })) }, false, false);
+      }
     }
   };
 
@@ -106,7 +120,7 @@
     $('#next').classList.toggle('hide', step === 3);
     $('#submit').classList.toggle('hide', step !== 3);
     if (step === 2) buildChecklist();
-    if (step === 3) {
+    if (step === 3 && !editId) {
       ['sig-req', 'sig-own'].forEach(id => { if (!pads[id]) pads[id] = new WP.SignaturePad($('#' + id)); });
     }
     scrollTo({ top: 0, behavior: 'smooth' });
@@ -122,9 +136,86 @@
   form.addEventListener('input', e => e.target.classList.remove('invalid'));
   addEventListener('resize', setBar);
 
-  // ---------- Submit ----------
+  // ---------- Form data (shared by submit and edit) ----------
+  const collect = () => ({
+    company: form.company.value, permit_type: form.permit_type.value, work_types: types(),
+    work_date: form.work_date.value, time_from: form.time_from.value, time_to: form.time_to.value,
+    requester_title: form.requester_title.value, requester_name: form.requester_name.value.trim(),
+    requester_company: form.requester_company.value.trim(), requester_phone: form.requester_phone.value.trim(),
+    owner_name: form.owner_name.value.trim(), owner_phone: form.owner_phone.value.trim(),
+    location: form.location.value.trim(), job_detail: form.job_detail.value.trim(),
+    workers: $$('tr', wb).map(tr => { const o = {}; $$('input', tr).forEach(i => o[i.dataset.w] = i.value.trim()); return o; }).filter(w => w.name),
+    checklist: WP.collectChecklist($('#checklist')),
+    loto: types().includes('electric') && $('#loto table') ? WP.collectLoto($('#loto')) : [],
+    confined: types().includes('confined') && $('#cs-box table') ? WP.collectConfined($('#cs-box')) : null,
+  });
+
+  // ---------- Edit mode: load + pre-fill ----------
+  if (editId) {
+    const E = WP.esc;
+    const view = `${WP.base}/admin/view.html?id=${editId}`;
+    const top = document.createElement('div');
+    top.className = 'alert info mb2';
+    top.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i><div>กำลังโหลดข้อมูลใบอนุญาต...</div>';
+    $('.wizard-top').before(top);
+    $('#submit').innerHTML = '<i class="fa-solid fa-floppy-disk"></i> บันทึกการแก้ไข';
+    $('#submit').disabled = true;
+    $('.step[data-step="3"] .s-lbl').textContent = 'ตรวจทาน & บันทึก';
+    ['#rules-grid', '#agree-card', '#sig-card', '#attach-card'].forEach(s => $(s).classList.add('hide'));
+    const r = await WP.api('permit', { id: editId });
+    if (!r.ok) {
+      if (r.code === 'NOT_FOUND') { location.replace(`${WP.base}/admin/permits.html`); return; }
+      top.className = 'alert err mb2';
+      top.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i><div>${E(r.msg)}</div>`;
+      return;
+    }
+    const p = r.data.permit;
+    editNo = p.permit_no;
+    WP.setPage('แก้ไขข้อมูลใบอนุญาต ' + p.permit_no, 'list');
+    top.className = 'alert warn mb2';
+    top.innerHTML = `<i class="fa-solid fa-pen-to-square"></i><div>กำลังแก้ไขข้อมูลใบอนุญาต <b>${E(p.permit_no)}</b> ${WP.statusBadge(p.es)} — แก้ไขข้อมูลที่ผู้ขอกรอกได้ทุกขั้นตอน แล้วกด <b>บันทึกการแก้ไข</b> (ต้องใช้รหัสผ่าน Reset password)
+      <br><a href="${view}"><i class="fa-solid fa-arrow-left"></i> กลับไปหน้าพิจารณาโดยไม่บันทึก</a></div>`;
+    const sum = $('#edit-summary');
+    sum.className = 'alert info mb2';
+    sum.innerHTML = `<i class="fa-solid fa-circle-info"></i><div>เลขที่ใบอนุญาต สถานะ ผลการอนุมัติ/การตรวจสอบ ลายมือชื่อ และไฟล์แนบ <b>ไม่ถูกแก้ไข</b> จากหน้านี้ ·
+      ระบบบันทึกประวัติ "แก้ไขข้อมูล" พร้อมชื่อผู้แก้ไขและรายการที่เปลี่ยน · วันที่/เวลาที่แก้ไขจะใช้คำนวณการหมดอายุใหม่ทันที</div>`;
+
+    const setRadio = (name, v) => $$(`input[name=${name}]`).forEach(i => { i.checked = i.value === v; });
+    setRadio('company', p.company);
+    setRadio('permit_type', p.permit_type);
+    setRadio('requester_title', p.requester_title);
+    $$('input[name=work_types]').forEach(c => { c.checked = (p.work_types || []).includes(c.value); });
+    form.work_date.value = p.work_date || '';
+    form.time_from.value = WP.hm(p.time_from);
+    form.time_to.value = WP.hm(p.time_to);
+    ['requester_name', 'requester_company', 'requester_phone', 'owner_name', 'owner_phone', 'location', 'job_detail'].forEach(k => { form[k].value = p[k] || ''; });
+    (p.workers || []).forEach(w => addWorker(false, w));
+    if (!(p.workers || []).length) addWorker(false);
+    initial = { checklist: p.checklist || {}, loto: p.loto || [], confined: p.confined || {} };
+    buildChecklist(); // render now so the sections are saved even if step 3 is never opened
+    $('#submit').disabled = false;
+  } else {
+    addWorker(false); addWorker(false);
+  }
+
+  // ---------- Submit / Save ----------
   $('#submit').onclick = async () => {
     for (let s = 0; s < 3; s++) if (!validate(s)) return go(s);
+    const data = collect();
+    if (editId) {
+      const ok = await Swal.fire({
+        icon: 'question', title: `บันทึกการแก้ไข ${editNo}?`,
+        html: `<small>${WP.esc(data.location)} · ${data.work_date} ${data.time_from}-${data.time_to}</small>`,
+        showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-floppy-disk"></i> บันทึก', cancelButtonText: 'ตรวจสอบอีกครั้ง'
+      });
+      if (!ok.isConfirmed) return;
+      const r = await WP.withResetPassword('update_permit', Object.assign({ id: editId }, data), `ยืนยันการแก้ไข ${editNo}`);
+      if (!r) return;
+      if (!r.ok) return Swal.fire({ icon: 'error', title: 'บันทึกไม่สำเร็จ', text: r.msg });
+      await Swal.fire({ icon: 'success', title: r.data.changed.length ? 'บันทึกการแก้ไขเรียบร้อย' : 'ไม่มีข้อมูลที่เปลี่ยนแปลง', timer: 1300, showConfirmButton: false });
+      location.href = `${WP.base}/admin/view.html?id=${editId}`;
+      return;
+    }
     if (!$('#agree').checked) {
       $('#agree').closest('.card').animate([{ transform: 'translateX(0)' }, { transform: 'translateX(-10px)' }, { transform: 'translateX(10px)' }, { transform: 'translateX(0)' }], { duration: 350 });
       return Swal.fire({ icon: 'warning', title: 'กรุณายอมรับระเบียบความปลอดภัย' });
@@ -134,19 +225,8 @@
     if (f && f.size > CFG.uploadMaxMb * 1048576) return Swal.fire({ icon: 'error', title: `ไฟล์ใหญ่เกิน ${CFG.uploadMaxMb}MB` });
     if (f && !CFG.uploadExt.includes(f.name.split('.').pop().toLowerCase())) return Swal.fire({ icon: 'error', title: 'ชนิดไฟล์ไม่รองรับ', text: 'PDF/JPG/PNG/XLS/DOC เท่านั้น' });
 
-    const data = {
-      company: form.company.value, permit_type: form.permit_type.value, work_types: types(),
-      work_date: form.work_date.value, time_from: form.time_from.value, time_to: form.time_to.value,
-      requester_title: form.requester_title.value, requester_name: form.requester_name.value.trim(),
-      requester_company: form.requester_company.value.trim(), requester_phone: form.requester_phone.value.trim(),
-      owner_name: form.owner_name.value.trim(), owner_phone: form.owner_phone.value.trim(),
-      location: form.location.value.trim(), job_detail: form.job_detail.value.trim(),
-      workers: $$('tr', wb).map(tr => { const o = {}; $$('input', tr).forEach(i => o[i.dataset.w] = i.value.trim()); return o; }).filter(w => w.name),
-      checklist: WP.collectChecklist($('#checklist')),
-      loto: types().includes('electric') && $('#loto table') ? WP.collectLoto($('#loto')) : [],
-      confined: types().includes('confined') && $('#cs-box table') ? WP.collectConfined($('#cs-box')) : null,
-      requester_sign: pads['sig-req'].toData(), owner_sign: pads['sig-own'].empty ? '' : pads['sig-own'].toData(),
-    };
+    data.requester_sign = pads['sig-req'].toData();
+    data.owner_sign = pads['sig-own'].empty ? '' : pads['sig-own'].toData();
     const ok = await Swal.fire({
       icon: 'question', title: 'ยืนยันส่งใบขออนุญาต?',
       html: `ส่งไปยัง <b>เจ้าหน้าที่ความปลอดภัย (จป.)</b> เพื่อพิจารณาอนุมัติ<br><small>${WP.esc(data.location)} · ${data.work_date} ${data.time_from}-${data.time_to}</small>`,

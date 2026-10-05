@@ -28,7 +28,7 @@
 3. **Project Settings** (รูปเฟือง) → ติ๊ก *Show "appsscript.json" manifest file in editor* → เปิด `appsscript.json` แล้วแทนที่ด้วยไฟล์ `appsscript.json` ของชุดนี้ (timeZone `Asia/Bangkok`, V8)
 4. **Project Settings → Script properties → Add script property**
    - `WP_INITIAL_ADMIN_PASSWORD` = รหัสผ่านเริ่มต้นของผู้ใช้ `admin` (อย่างน้อย 8 ตัวอักษร)
-   - (ไม่บังคับ) `WP_RESET_PASSWORD` = รหัสผ่านสำหรับปุ่ม "รีเซ็ตข้อมูล" ในแดชบอร์ด จป. (ลบใบอนุญาต/logs ทั้งหมด และย้ายไฟล์แนบ/ลายเซ็นไปถังขยะ Drive; ผู้ใช้ยังอยู่) — ไม่ตั้ง = ปุ่มรีเซ็ตใช้ไม่ได้
+   - (ไม่บังคับ) `WP_RESET_PASSWORD` = รหัสผ่านสำหรับปุ่ม "รีเซ็ตข้อมูล" ในแดชบอร์ด จป. (ลบใบอนุญาต/logs ทั้งหมด และย้ายไฟล์แนบ/ลายเซ็นไปถังขยะ Drive; ผู้ใช้ยังอยู่) และใช้ยืนยันการ **แก้ไขข้อมูล (✏️)** / **ลบ (🗑)** ใบอนุญาตทีละใบ (ผิดรวมกัน 10 ครั้ง = ระงับ 15 นาที) — ไม่ตั้ง = ปุ่มรีเซ็ต/แก้ไข/ลบใช้ไม่ได้
    - (ไม่บังคับ) `WP_SITE_URL` = URL ของ GitHub Pages เช่น `https://YOUR_USERNAME.github.io/work-permit` (ใช้สร้างลิงก์ติดตามแบบเต็มใน response)
 5. เลือกฟังก์ชัน `setupSystem` → **Run** → อนุญาตสิทธิ์ Google Sheets และ Google Drive
    - ระบบจะสร้าง Spreadsheet "e-Work Permit (FM-MR-58) Database", โฟลเดอร์ Drive "e-Work Permit (FM-MR-58) Files" และผู้ใช้ `admin`

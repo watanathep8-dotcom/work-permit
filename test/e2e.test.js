@@ -167,7 +167,7 @@ module.exports = function run() {
   check('attachment by id needs session', post({ action: 'file', id: 1 }).code === 'AUTH');
 
   // admin-only actions must refuse anonymous / bogus / token callers
-  ['poll', 'dashboard', 'permits', 'save_review', 'decide', 'delete', 'users', 'user_save', 'user_toggle', 'me', 'reset_data'].forEach((a) => {
+  ['poll', 'dashboard', 'permits', 'save_review', 'decide', 'delete', 'update_permit', 'users', 'user_save', 'user_toggle', 'me', 'reset_data'].forEach((a) => {
     check('anonymous ' + a + ' refused', post({ action: a, id: 1, decision: 'approve', fullname: 'x', no: P1.permit_no, t: P1.token }).code === 'AUTH');
     check('bogus session ' + a + ' refused', post({ action: a, id: 1, session: '0'.repeat(64) }).code === 'AUTH');
   });
@@ -284,25 +284,151 @@ module.exports = function run() {
   check('logout', post({ action: 'logout', session: S }).ok && post({ action: 'me', session: S }).code === 'AUTH');
   S = post({ action: 'login', username: 'admin', password: 'Brand-New-1' }).data.session;
 
-  // ================================================================ delete
-  const fileIds = ['attachment_file', 'requester_sign_file', 'owner_sign_file', 'approver_sign_file']
-    .map((k) => ss.getSheetByName('permits').getDataRange().getValues()[1][ph.indexOf(k)]).filter(Boolean);
-  r = post({ action: 'delete', session: S, id: 1 });
-  check('delete', r.ok);
-  check('deleted permit unreachable by token', post({ action: 'permit', no: P1.permit_no, t: P1.token }).code === 'NOT_FOUND');
-  check('deleted permit files moved to Drive trash', fileIds.length === 4 && fileIds.every((id) => gas.files.get(id).isTrashed()));
-  check('logs of deleted permit removed', ss.getSheetByName('permit_logs').getDataRange().getValues().slice(1).every((row) => String(row[1]) !== '1'));
-  check('other permits intact', post({ action: 'permit', no: P2.permit_no, t: P2.token }).ok);
-
-  // ================================================================ reset_data
+  // ================================================================ edit / delete (admin session + reset password)
   const pSheet = ss.getSheetByName('permits'), lSheet = ss.getSheetByName('permit_logs');
   const RESET_PW = 'Reset-Only-For-Tests-9';
-  check('reset: no session → AUTH', post({ action: 'reset_data', resetPassword: RESET_PW }).code === 'AUTH');
-  check('reset: token holder (no session) → AUTH', post({ action: 'reset_data', no: P2.permit_no, t: P2.token, resetPassword: RESET_PW }).code === 'AUTH');
+  const findRow = (id) => pSheet.getDataRange().getValues().find((x, i) => i > 0 && String(x[0]) === String(id));
+  const rowOf = (id) => { const row = findRow(id); return row ? JSON.stringify(row) : null; };
+  const col = (id, k) => { const row = findRow(id); return row ? row[ph.indexOf(k)] : undefined; };
+  const logRows = () => lSheet.getLastRow() - 1;
+  const editBody = (o = {}) => {
+    const b = Object.assign(base(), {
+      action: 'update_permit', session: S, id: P4.id, resetPassword: RESET_PW,
+      company: G.WP_DATA.companies[1], permit_type: 'internal', work_types: ['general', 'hot', 'nope'],
+      work_date: '2026-10-07', time_from: '22:00', time_to: '04:00',
+      requester_name: 'สมชาย (แก้)', requester_company: 'ผู้รับเหมา ข', requester_phone: '0822222222',
+      owner_name: 'วิชัย 2', owner_phone: '', location: '+SUM(1,2)', job_detail: 'ซ่อมท่อ',
+      workers: [{ name: 'ก' }, { name: 'ข', role: 'ช่าง' }, { name: '' }, { name: 'ค', idno: '9' }],
+      checklist: { h1: true, g1: true, junk: 1 }, loto: [{ item: 'MDB-2' }], confined: { gas: [{ o2: '20' }] },
+      // must be ignored:
+      status: 'approved', permit_no: 'WP-HACKED-001', token: 'f'.repeat(32), approver_name: 'แฮกเกอร์', approved_at: '2026-01-01 00:00:00',
+      inspections: { safety: { permit: { name: 'x' } } }, requester_sign_file: 'evil', created_at: '2000-01-01 00:00:00', logs: []
+    }, o);
+    delete b.attachment;
+    Object.keys(b).forEach((k) => { if (b[k] === undefined) delete b[k]; });
+    return b;
+  };
+  const p4Before = rowOf(P4.id), p2Before = rowOf(P2.id), logsBefore0 = logRows();
+
+  check('edit: no session → AUTH', post(editBody({ session: undefined })).code === 'AUTH');
+  check('edit: token holder (no session) → AUTH', post(editBody({ session: undefined, no: P4.permit_no, t: P4.token })).code === 'AUTH');
+  check('delete: no session → AUTH', post({ action: 'delete', id: P4.id, resetPassword: RESET_PW }).code === 'AUTH');
+  r = post(editBody());
+  check('edit: refused while WP_RESET_PASSWORD unset', !r.ok && r.code === 'SETUP' && /WP_RESET_PASSWORD/.test(r.error), r);
+  r = post({ action: 'delete', session: S, id: P4.id, resetPassword: RESET_PW });
+  check('delete: refused while WP_RESET_PASSWORD unset', !r.ok && r.code === 'SETUP', r);
   r = post({ action: 'reset_data', session: S, resetPassword: RESET_PW });
   check('reset: refused while WP_RESET_PASSWORD unset', !r.ok && r.code === 'SETUP' && /WP_RESET_PASSWORD/.test(r.error), r);
   check('reset password is not in the source', !['Code.gs', 'Auth.gs', 'Permits.gs', 'Setup.gs'].some((f) => /WP_RESET_PASSWORD['"]?\s*[:=]\s*['"][^'"]+['"]/.test(fs.readFileSync(path.join(ROOT, 'apps-script', f), 'utf8'))));
   gas.propStore.WP_RESET_PASSWORD = RESET_PW;
+
+  gas.stats.sleeps.length = 0;
+  r = post(editBody({ resetPassword: undefined }));
+  check('edit: without password refused', !r.ok && r.code === 'AUTH_FAILED', r);
+  r = post(editBody({ resetPassword: 'wrong' }));
+  check('edit: wrong password refused', !r.ok && r.code === 'AUTH_FAILED' && /ไม่ถูกต้อง/.test(r.error), r);
+  check('edit: wrong password sleeps 1s', gas.stats.sleeps.length === 2 && gas.stats.sleeps[1] === 1000);
+  r = post({ action: 'delete', session: S, id: P4.id });
+  check('delete: without password refused', !r.ok && r.code === 'AUTH_FAILED', r);
+  r = post({ action: 'delete', session: S, id: P4.id, resetPassword: 'wrong' });
+  check('delete: wrong password refused', !r.ok && r.code === 'AUTH_FAILED', r);
+  check('edit/delete: nothing changed after password failures', rowOf(P4.id) === p4Before && logRows() === logsBefore0 && post({ action: 'permit', no: P4.permit_no, t: P4.token }).ok);
+  // shared lockout with reset_data: 4 failures so far + 3 via reset + 3 via edit → 10
+  for (let i = 0; i < 3; i++) post({ action: 'reset_data', session: S, resetPassword: 'bad' + i });
+  for (let i = 0; i < 3; i++) post(editBody({ resetPassword: 'bad' + i }));
+  r = post(editBody());
+  check('edit: locked by shared counter (right password)', !r.ok && r.code === 'LOCKED', r);
+  check('delete: locked by shared counter', post({ action: 'delete', session: S, id: P4.id, resetPassword: RESET_PW }).code === 'LOCKED');
+  check('reset: locked by failures made via edit/delete', post({ action: 'reset_data', session: S, resetPassword: RESET_PW }).code === 'LOCKED');
+  check('edit/delete lockout does not lock login', post({ action: 'login', username: 'admin', password: 'Brand-New-1' }).ok);
+  check('nothing changed while locked', rowOf(P4.id) === p4Before && logRows() === logsBefore0);
+  gas.clock.offset += 16 * 60 * 1000;
+
+  // validation exactly like submit — invalid input rejected, nothing changes
+  const badEdit = (name, mut, re) => { const b = editBody(); mut(b); const x = post(b); check('edit rejects: ' + name, !x.ok && (!re || re.test(x.error)), x); };
+  badEdit('no work types', (b) => { b.work_types = ['bogus']; }, /ลักษณะงาน/);
+  badEdit('bad company', (b) => { b.company = 'X'; }, /บริษัท/);
+  badEdit('bad permit type', (b) => { b.permit_type = 'x'; }, /ประเภท/);
+  badEdit('bad date', (b) => { b.work_date = '7/10/2026'; }, /วันที่/);
+  badEdit('bad time', (b) => { b.time_from = '8'; }, /เวลา/);
+  badEdit('missing requester name', (b) => { b.requester_name = ' '; }, /ชื่อผู้ขออนุญาต/);
+  badEdit('missing phone', (b) => { delete b.requester_phone; }, /เบอร์โทรศัพท์/);
+  badEdit('missing location', (b) => { b.location = ''; }, /สถานที่/);
+  badEdit('missing job detail', (b) => { b.job_detail = ''; }, /รายละเอียดงาน/);
+  badEdit('oversize workers JSON (cell limit)', (b) => { b.workers = Array.from({ length: 200 }, (_, i) => ({ name: 'ก'.repeat(150), role: 'ข'.repeat(150), idno: String(i).repeat(50) })); }, /ขีดจำกัด/);
+  check('edit: unknown permit → NOT_FOUND', post(editBody({ id: 999 })).code === 'NOT_FOUND');
+  check('edit: invalid input changed nothing', rowOf(P4.id) === p4Before && logRows() === logsBefore0);
+
+  // successful edit
+  const fileCols = ['requester_sign_file', 'owner_sign_file', 'attachment_file', 'approver_sign_file'];
+  const keepCols = ['id', 'permit_no', 'token', 'status', 'inspections', 'approver_id', 'approver_name', 'approve_comment', 'approved_at', 'closed_at', 'created_at'].concat(fileCols);
+  const keepBefore = keepCols.map((k) => col(P4.id, k));
+  const filesBefore = gas.files.size;
+  r = post(editBody());
+  check('edit: ok', r.ok && r.data.changed.length > 5 && r.data.permit.permit_no === P4.permit_no, r);
+  const e4 = post({ action: 'permit', no: P4.permit_no, t: P4.token }).data;
+  check('edit: old tracking token still works', !!e4);
+  const ep = e4 && e4.permit;
+  check('edit: allowed fields changed', ep && ep.company === G.WP_DATA.companies[1] && ep.permit_type === 'internal' && ep.work_types.join() === 'general,hot' &&
+    ep.work_date === '2026-10-07' && ep.time_from === '22:00' && ep.time_to === '04:00' && ep.requester_name === 'สมชาย (แก้)' &&
+    ep.requester_company === 'ผู้รับเหมา ข' && ep.requester_phone === '0822222222' && ep.owner_name === 'วิชัย 2' && ep.owner_phone === '' &&
+    ep.job_detail === 'ซ่อมท่อ' && ep.worker_count === 3 && ep.workers.map((w) => w.name).join() === 'ก,ข,ค', ep);
+  check('edit: formula-like text round-trips', ep && ep.location === '+SUM(1,2)');
+  check('edit: sections sanitized like submit', ep && ep.checklist.h1 === true && !('junk' in ep.checklist) && ep.loto.length === 1 && ep.loto[0].item === 'MDB-2' && ep.confined === null, ep);
+  check('edit: status / permit_no / token / approvals / signatures / created_at untouched', keepCols.every((k, i) => col(P4.id, k) === keepBefore[i]) && ep.status === 'pending' && !ep.approver_name, keepCols.map((k) => col(P4.id, k)));
+  check('edit: expiry recomputed from new date/time (overnight)', ep && ep.end_ts === BKK('2026-10-08T04:00:00') / 1000 && ep.es === 'pending');
+  const editLog = e4 && e4.logs[e4.logs.length - 1];
+  check('edit: log row "แก้ไขข้อมูล" with admin name and changed fields', editLog && editLog.action === 'edit' && editLog.by_name === 'ผู้ดูแลระบบ จป.' &&
+    /^แก้ไขข้อมูล: /.test(editLog.note) && /บริษัท \(พื้นที่\)/.test(editLog.note) && /สถานที่ปฏิบัติงาน/.test(editLog.note) && !/คำนำหน้า/.test(editLog.note) && logRows() === logsBefore0 + 1, editLog);
+  check('edit: other permits untouched', rowOf(P2.id) === p2Before);
+  check('edit: no Drive files created, signatures still served', gas.files.size === filesBefore && post({ action: 'permit', session: S, id: P4.id, signs: true }).data.signs.requester.startsWith('data:image/png'));
+  r = post(editBody());
+  check('edit: unchanged data → no changes, no log', r.ok && r.data.changed.length === 0 && logRows() === logsBefore0 + 1, r);
+  r = post(editBody({ checklist: { g1: true, h1: true } }));
+  check('edit: checklist key order is not a change', r.ok && r.data.changed.length === 0, r);
+  r = post(editBody({ checklist: { g1: true, h1: true, h2: false, h3: '', h8: { sel: [], other: '' } }, loto: [{ item: 'MDB-2', t_on: '' }, {}, { item: '' }] }));
+  check('edit: blank items / empty LOTO rows (as the form sends them) are not a change', r.ok && r.data.changed.length === 0, r);
+  r = post(editBody({ loto: [{ item: 'MDB-2' }, { item: 'MDB-3' }] }));
+  check('edit: a real LOTO change is detected', r.ok && r.data.changed.join() === 'loto', r);
+  post(editBody());
+  r = post(editBody({ work_types: ['confined'], confined: { gas: [{ o2: '20.5' }] } }));
+  check('edit: confined section stored', r.ok && post({ action: 'permit', session: S, id: P4.id }).data.permit.confined.gas[0].o2 === '20.5', r);
+  const b5 = editBody({ work_types: ['confined'] }); delete b5.confined; delete b5.checklist; delete b5.loto;
+  r = post(b5);
+  const k5 = post({ action: 'permit', session: S, id: P4.id }).data.permit;
+  check('edit: omitted optional sections kept', r.ok && r.data.changed.length === 0 && k5.confined.gas[0].o2 === '20.5' && k5.checklist.h1 === true && k5.loto.length === 1, r);
+
+  // expiry re-check on an approved permit
+  check('approve edited permit', post({ action: 'decide', session: S, id: P4.id, decision: 'approve', sign: SIG }).ok);
+  const apprCols = ['status', 'approver_name', 'approver_sign_file', 'approved_at', 'inspections'];
+  const apprBefore = apprCols.map((k) => col(P4.id, k));
+  check('approved + future date → approved', post({ action: 'permit', session: S, id: P4.id }).data.permit.es === 'approved');
+  r = post(editBody({ work_types: ['confined'], work_date: '2026-10-05', time_from: '08:00', time_to: '17:00' }));
+  const x4 = post({ action: 'permit', session: S, id: P4.id }).data.permit;
+  check('edit to a past date → expired immediately; approval kept', r.ok && x4.status === 'approved' && x4.es === 'expired' && x4.end_ts === BKK('2026-10-05T17:00:00') / 1000 &&
+    apprCols.every((k, i) => col(P4.id, k) === apprBefore[i]), x4);
+  r = post(editBody({ work_types: ['confined'], work_date: '2026-10-06', time_from: '08:00', time_to: '23:00' }));
+  check('edit back into the window → approved again', r.ok && post({ action: 'permit', session: S, id: P4.id }).data.permit.es === 'approved', r);
+
+  // delete
+  const fileIds = fileCols.map((k) => col(1, k)).filter(Boolean);
+  const p4Snap = rowOf(P4.id), p2Snap = rowOf(P2.id);
+  check('delete: unknown permit → NOT_FOUND', post({ action: 'delete', session: S, id: 999, resetPassword: RESET_PW }).code === 'NOT_FOUND');
+  r = post({ action: 'delete', session: S, id: 1, resetPassword: RESET_PW });
+  check('delete with password', r.ok && r.data.permit_no === P1.permit_no, r);
+  check('deleted permit row removed', rowOf(1) === null);
+  check('deleted permit unreachable by token', post({ action: 'permit', no: P1.permit_no, t: P1.token }).code === 'NOT_FOUND');
+  check('deleted permit unreachable by id', post({ action: 'permit', session: S, id: 1 }).code === 'NOT_FOUND');
+  check('deleted permit files moved to Drive trash', fileIds.length === 4 && fileIds.every((id) => gas.files.get(id).isTrashed()));
+  check('logs of deleted permit removed', lSheet.getDataRange().getValues().slice(1).every((row) => String(row[1]) !== '1'));
+  check('other permits intact', post({ action: 'permit', no: P2.permit_no, t: P2.token }).ok && rowOf(P4.id) === p4Snap && rowOf(P2.id) === p2Snap &&
+    post({ action: 'permit', session: S, id: P4.id }).data.logs.length > 1);
+  check('other permits files not trashed', [col(P2.id, 'requester_sign_file'), col(P4.id, 'requester_sign_file')].every((id) => !gas.files.get(id).isTrashed()));
+  check('delete recorded in execution log', gas.logs.some((l) => l.startsWith('LOG WP delete permit ' + P1.permit_no + ' (id 1) by admin')));
+
+  // ================================================================ reset_data
+  check('reset: no session → AUTH', post({ action: 'reset_data', resetPassword: RESET_PW }).code === 'AUTH');
+  check('reset: token holder (no session) → AUTH', post({ action: 'reset_data', no: P2.permit_no, t: P2.token, resetPassword: RESET_PW }).code === 'AUTH');
   const beforeRows = pSheet.getLastRow();
   gas.stats.sleeps.length = 0;
   r = post({ action: 'reset_data', session: S, resetPassword: 'wrong' });

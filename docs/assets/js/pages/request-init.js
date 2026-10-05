@@ -1,5 +1,6 @@
 // request.php — server-rendered lists now rendered from WP_DATA (runs before request.js)
 (() => {
+  if (WP.halt) return;
   const { $ } = WP, D = WP.data, E = WP.esc;
   $('#company-seg').innerHTML = D.companies.map((c, i) =>
     `<label><input type="radio" name="company" value="${E(c)}" ${i === 0 ? 'checked' : ''}><span><i class="fa-solid fa-building-flag"></i>${E(c)}</span></label>`).join('');
@@ -14,7 +15,8 @@
           </label>`).join('');
   const today = WP.todayBkk();
   const wd = $('input[name=work_date]');
-  wd.value = today; wd.min = today;
+  wd.value = today;
+  if (!WP.editMode) wd.min = today; // the จป. may correct past permits (request.html?edit=<id>)
   const li = arr => arr.map(r => `<li>${E(r)}</li>`).join('');
   $('#rules').innerHTML = li(D.safetyRules);
   $('#agreement').innerHTML = li(D.safetyAgreement);

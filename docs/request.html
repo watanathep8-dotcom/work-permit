@@ -11,7 +11,7 @@
 <link rel="stylesheet" href="assets/css/app.css">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x26D1;&#xFE0F;</text></svg>">
 </head>
-<body data-layout="public" data-active="request" data-title="ขอใบอนุญาตปฏิบัติงาน">
+<body data-layout="public" data-active="request" data-title="ขอใบอนุญาตปฏิบัติงาน" data-edit-layout="admin" data-edit-active="list" data-edit-title="แก้ไขข้อมูลใบอนุญาต">
 <div id="wp-page">
 <div class="card wizard-top glow-border always reveal">
   <div class="steps" id="steps">
@@ -112,7 +112,8 @@
 
 <!-- ===== STEP 4 ===== -->
 <section class="wz-panel" data-panel="3">
-  <div class="grid g2 mb2">
+  <div id="edit-summary" class="hide"></div>
+  <div class="grid g2 mb2" id="rules-grid">
     <div class="card">
       <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-scale-balanced ic-swing"></i></span><h3>ระเบียบปฏิบัติเพื่อความปลอดภัย</h3></div>
       <div class="card-b rules"><h4><i class="fa-solid fa-shield-heart"></i> อาชีวอนามัย และสภาพแวดล้อมในการทำงาน</h4>
@@ -127,19 +128,19 @@
     </div>
   </div>
 
-  <div class="card mb2 glow-border always">
+  <div class="card mb2 glow-border always" id="agree-card">
     <div class="card-b">
       <label class="ck" style="font-size:16px"><input type="checkbox" id="agree"><span class="box"><i class="fa-solid fa-check"></i></span>
         <span class="lbl"><b>ข้าพเจ้าได้อ่านและเข้าใจข้อความเบื้องต้นแล้ว และยินดีที่จะปฏิบัติตามกฎระเบียบอย่างเคร่งครัด</b></span></label>
     </div>
   </div>
 
-  <div class="card mb2">
+  <div class="card mb2" id="sig-card">
     <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-pen-fancy ic-wiggle"></i></span><h3>ลงลายมือชื่อ</h3></div>
     <div class="card-b grid g2" id="sig-area"></div>
   </div>
 
-  <div class="card">
+  <div class="card" id="attach-card">
     <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-paperclip ic-swing"></i></span><h3>เอกสารแนบ (ถ้ามี)</h3><span class="spacer"></span><small class="muted">รายชื่อพนักงาน, ปจ.1/ปจ.2, Lifting Plan ฯลฯ · PDF/JPG/PNG/XLS/DOC ≤ <span id="max-mb">10</span>MB</small></div>
     <div class="card-b">
       <label class="drop" id="drop"><input type="file" id="attach" hidden accept=".pdf,.jpg,.jpeg,.png,.xls,.xlsx,.doc,.docx">

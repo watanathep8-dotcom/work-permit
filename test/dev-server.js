@@ -4,7 +4,7 @@
  *   node test/dev-server.js [port] --no-api   → docs/ exactly as shipped (apiUrl empty → Thai banner)
  *
  * With the mock API, config.js is rewritten on the fly to point at /api and the
- * backend is set up with the test-only admin password below (in-memory, lost on exit).
+ * backend is set up with the test-only admin + reset passwords below (in-memory, lost on exit).
  */
 'use strict';
 const http = require('http');
@@ -13,6 +13,7 @@ const path = require('path');
 const { createGas } = require('./gas-mock');
 
 const DEV_ADMIN_PASSWORD = 'dev-admin-pass'; // test fixture for the in-memory mock only
+const DEV_RESET_PASSWORD = 'dev-reset-pass'; // test fixture (Script Property WP_RESET_PASSWORD) for the mock only
 const port = Number(process.argv[2]) || 8765;
 const noApi = process.argv.includes('--no-api');
 const DOCS = path.join(__dirname, '..', 'docs');
@@ -25,6 +26,7 @@ if (!noApi) {
   gas.propStore.WP_INITIAL_ADMIN_PASSWORD = DEV_ADMIN_PASSWORD;
   gas.context.setupSystem();
   delete gas.propStore.WP_INITIAL_ADMIN_PASSWORD;
+  gas.propStore.WP_RESET_PASSWORD = DEV_RESET_PASSWORD; // enables reset / edit / delete in the preview
 }
 
 http.createServer((req, res) => {

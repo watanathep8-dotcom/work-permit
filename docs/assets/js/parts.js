@@ -63,7 +63,7 @@
 
   /** render_timeline() */
   WP.timelineHTML = logs => {
-    const map = { submit: ['ยื่นใบขออนุญาต', ''], approve: ['จป. อนุมัติ', ''], reject: ['ไม่อนุมัติ', 'reject'], close: ['ปิดงาน', 'close'], review: ['บันทึกการตรวจสอบ', ''] };
+    const map = { submit: ['ยื่นใบขออนุญาต', ''], approve: ['จป. อนุมัติ', ''], reject: ['ไม่อนุมัติ', 'reject'], close: ['ปิดงาน', 'close'], review: ['บันทึกการตรวจสอบ', ''], edit: ['จป. แก้ไขข้อมูล', ''] };
     return '<div class="timeline">' + (logs || []).map((l, i) => {
       const [t, c] = map[l.action] || [l.action, ''];
       return `<div class="tl-item ${c}" style="animation-delay:${i * 100}ms"><b>${E(t)}</b><small>${WP.thaiDate(l.created_at, true)} · ${E(l.by_name)}</small>${l.note ? '<p>' + WP.nl2br(l.note) + '</p>' : ''}</div>`;

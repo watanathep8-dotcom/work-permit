@@ -8,7 +8,7 @@
  * Files (all share one global scope in Apps Script):
  *   Code.gs     — router (doGet/doPost), response helpers, sheet "DB" helpers, utilities
  *   Auth.gs     — password hashing, login/logout/sessions (CacheService), user management
- *   Permits.gs  — permit actions (submit, track, list, view, review, decide, delete, files)
+ *   Permits.gs  — permit actions (submit, track, list, view, review, decide, edit, delete, reset, files)
  *   Setup.gs    — setupSystem() (run once from the editor)
  *   Data.gs     — reference data (companies, checklists, rules) — single source of truth
  *
@@ -90,11 +90,12 @@ function routes_() {
     permits: apiPermits_,
     save_review: apiSaveReview_,
     decide: apiDecide_,
-    'delete': apiDelete_,
+    'delete': apiDelete_,           // + reset password
+    update_permit: apiUpdatePermit_, // + reset password
     users: apiUsers_,
     user_save: apiUserSave_,
     user_toggle: apiUserToggle_,
-    reset_data: apiResetData_
+    reset_data: apiResetData_       // + reset password
   };
 }
 var WP_GET_ACTIONS = { ping: true, config: true, stats: true };

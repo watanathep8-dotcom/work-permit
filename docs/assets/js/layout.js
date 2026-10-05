@@ -7,9 +7,11 @@
   const WP = window.WP;
   const B = WP.base, E = WP.esc;
   const body = document.body;
-  const layout = (WP.layout = body.dataset.layout || 'public');
-  let active = body.dataset.active || '';
-  const title = body.dataset.title || '';
+  // A page may offer an admin "edit mode" (request.html?edit=<id>): data-edit-layout/-active/-title apply then.
+  const editMode = (WP.editMode = !!(body.dataset.editLayout && WP.qs('edit')));
+  const layout = (WP.layout = (editMode && body.dataset.editLayout) || body.dataset.layout || 'public');
+  let active = (editMode && body.dataset.editActive) || body.dataset.active || '';
+  const title = (editMode && body.dataset.editTitle) || body.dataset.title || '';
   const appName = (WP.data.config && WP.data.config.appName) || 'e-Work Permit';
 
   if (layout === 'admin' && !WP.session) {

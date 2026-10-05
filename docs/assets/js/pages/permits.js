@@ -39,9 +39,26 @@
         <td>${+x.worker_count || 0}</td>
         <td class="nowrap"><small>${WP.thaiDate(x.created_at, true)}</small></td>
         <td class="nowrap"><a class="btn sm ${x.status === 'pending' ? 'gold' : 'ghost'}" href="view.html?id=${x.id}"><i class="fa-solid ${x.status === 'pending' ? 'fa-gavel' : 'fa-eye'}"></i> ${x.status === 'pending' ? 'พิจารณา' : 'ดู'}</a>
-          <a class="btn-icon" href="../print.html?id=${x.id}" target="_blank" title="พิมพ์"><i class="fa-solid fa-print"></i></a></td>
+          <a class="btn-icon" href="../print.html?id=${x.id}" target="_blank" title="พิมพ์"><i class="fa-solid fa-print"></i></a>
+          <a class="btn sm ghost" href="../request.html?edit=${x.id}" title="แก้ไขข้อมูล">✏️ แก้ไข</a>
+          <button type="button" class="btn sm danger" data-del="${x.id}" data-no="${E(x.permit_no)}" data-es="${E(x.es)}" title="ลบใบอนุญาต">🗑 ลบ</button></td>
       </tr>`).join('')}
   </tbody></table></div>`;
+
+  // ---------- per-row delete (admin session + reset password, asked once per page) ----------
+  $('#list').addEventListener('click', async e => {
+    const btn = e.target.closest('[data-del]');
+    if (!btn) return;
+    if (!(await WP.deletePermit(+btn.dataset.del, btn.dataset.no))) return;
+    // update in place (no reload) so the reset password stays in memory for further deletes
+    btn.closest('tr').remove();
+    const bump = a => { const em = a && a.querySelector('em'); if (em) em.textContent = Math.max(0, (+em.textContent || 0) - 1); };
+    const tabLinks = [...document.querySelectorAll('#tabs a')];
+    bump(tabLinks[0]);
+    const si = Object.keys(D.status).indexOf(btn.dataset.es);
+    if (si >= 0) bump(tabLinks[1 + si]);
+    if (!document.querySelector('#tbl tbody tr')) $('#list').innerHTML = '<div class="empty"><i class="fa-solid fa-folder-open"></i>ไม่พบข้อมูล</div>';
+  });
 
   $('#export').onclick = () => {
     const out = [...document.querySelectorAll('#tbl tr')].map(tr => [...tr.children].slice(0, 8).map(td => '"' + td.innerText.replace(/\s+/g, ' ').trim().replace(/"/g, '""') + '"').join(','));
