@@ -778,6 +778,21 @@ module.exports = function run() {
   check('concatenated .gs: setup + login + submit + dashboard + keepWarm work', s1x.ok && sub1.ok && post1({ action: 'dashboard', session: s1x.data.session }).data.cnt.pending === 1 &&
     g1.context.keepWarm().ok, { s1x, sub1 });
 
+  // ================================================================ forgotten admin password
+  {
+    const before = gas.propStore.WP_INITIAL_ADMIN_PASSWORD;
+    gas.propStore.WP_INITIAL_ADMIN_PASSWORD = 'short';
+    throws('resetAdminPassword: refuses a property shorter than 8', () => G.resetAdminPassword(), /อย่างน้อย 8/);
+    gas.propStore.WP_INITIAL_ADMIN_PASSWORD = 'Reset-Admin-77';
+    for (let i = 0; i < 12; i++) post({ action: 'login', username: 'admin', password: 'wrong-' + i }); // locked out
+    check('resetAdminPassword: lockout active before reset', post({ action: 'login', username: 'admin', password: 'Reset-Admin-77' }).code === 'LOCKED');
+    const r = G.resetAdminPassword();
+    const li = post({ action: 'login', username: 'admin', password: 'Reset-Admin-77' });
+    check('resetAdminPassword: admin logs in with the property value, lockout cleared', r.ok && li.ok && li.data.user.username === 'admin', { r, li });
+    check('resetAdminPassword: old admin sessions no longer work', post({ action: 'me', session: S }).ok === false);
+    if (before === undefined) delete gas.propStore.WP_INITIAL_ADMIN_PASSWORD; else gas.propStore.WP_INITIAL_ADMIN_PASSWORD = before;
+  }
+
   // ================================================================ invariants
   check('every sheet write happened under LockService', gas.stats.unlockedWrites === 0, gas.stats.unlockedWrites);
   check('no server errors logged', !gas.logs.some((l) => l.startsWith('ERROR')), gas.logs.filter((l) => l.startsWith('ERROR')));

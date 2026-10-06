@@ -166,3 +166,41 @@ function removeKeepWarmTrigger() {
   });
   return n;
 }
+
+/**
+ * Forgotten admin password: run this ONCE from the Apps Script editor.
+ * Sets the password of user "admin" to the current value of Script Property
+ * WP_INITIAL_ADMIN_PASSWORD (min 8 chars), re-enables the account, clears the
+ * login lockout and ends admin's existing sessions (they are bound to the salt).
+ * The admin is asked to change the password after logging in (must_change).
+ */
+function resetAdminPassword() {
+  var props = PropertiesService.getScriptProperties();
+  var pw = props.getProperty(WP_PROP_INITIAL_ADMIN_PASSWORD) || '';
+  if (pw.length < 8) {
+    throw new Error('กรุณาตั้งค่า Script Property "' + WP_PROP_INITIAL_ADMIN_PASSWORD + '" (อย่างน้อย 8 ตัวอักษร) เป็นรหัสผ่านใหม่ของ admin ก่อนรัน');
+  }
+  var ssId = props.getProperty('WP_SPREADSHEET_ID');
+  if (!ssId) throw new Error('ยังไม่ได้รัน setupSystem()');
+  var lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try {
+    var ctx = { tables: {}, ss: SpreadsheetApp.openById(ssId) };
+    var t = table_(ctx, 'users');
+    var u = findUserByName_(t, 'admin');
+    if (!u) throw new Error('ไม่พบผู้ใช้ admin');
+    var pf = makePasswordFields_(pw);
+    u.salt = pf.salt; u.iterations = pf.iterations; u.password_hash = pf.password_hash;
+    u.active = '1';
+    u.must_change = '1';
+    writeRow_(t, u);
+    SpreadsheetApp.flush();
+    cache_().remove('wplf_admin');
+    bumpDataVersion_();
+    var msg = 'ตั้งรหัสผ่าน admin ใหม่แล้ว = ค่าใน ' + WP_PROP_INITIAL_ADMIN_PASSWORD + ' — เข้าสู่ระบบแล้วเปลี่ยนรหัสผ่านทันที';
+    Logger.log(msg);
+    return { ok: true, note: msg };
+  } finally {
+    lock.releaseLock();
+  }
+}
