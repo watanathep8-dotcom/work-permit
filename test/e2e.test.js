@@ -662,6 +662,122 @@ module.exports = function run() {
   G.cachePutBig_('wpc_test_huge', 'x'.repeat(30000 * 21), 60);
   check('value over the chunk budget is not cached', G.cacheGetBig_('wpc_test_huge') === null);
 
+  // ================================================================ bug fixes (review / concurrency / submit)
+  S = post({ action: 'login', username: 'admin', password: 'Brand-New-1' }).data.session;
+  const permitOf = (id) => post({ action: 'permit', session: S, id }).data.permit;
+
+  // -- double submit: a retried submit with the same rid gets the same permit, nothing duplicated
+  const RID = 'ab'.repeat(16);
+  const subBody = () => Object.assign(base(), { work_date: '2026-10-07', rid: RID, with_permit: true });
+  const rowsBefore = pSheet.getLastRow(), logsBeforeRid = logRows(), filesBeforeRid = gas.files.size;
+  const first = post(subBody());
+  check('rid submit ok', first.ok, first);
+  const filesAfterFirst = gas.files.size;
+  const again = post(subBody());
+  check('rid: retried submit returns the same permit', again.ok && again.data.permit_no === first.data.permit_no && again.data.token === first.data.token && again.data.id === first.data.id, again);
+  check('rid: no second row / log / Drive file', pSheet.getLastRow() === rowsBefore + 1 && logRows() === logsBeforeRid + 1 && gas.files.size === filesAfterFirst && filesAfterFirst === filesBeforeRid + 3);
+  check('rid: replayed view === permit(no, t)', JSON.stringify(again.data.view) === JSON.stringify(post({ action: 'permit', no: first.data.permit_no, t: first.data.token }).data));
+  check('rid: cache holds no token', !String((gas.cacheStore.get('wpsub_' + RID) || {}).v).includes(first.data.token));
+  const noRid = [post(Object.assign(base(), { attachment: null })), post(Object.assign(base(), { attachment: null }))];
+  check('without rid: two submits are two permits (unchanged)', noRid[0].data.permit_no !== noRid[1].data.permit_no);
+  check('malformed rid is ignored', post(Object.assign(base(), { attachment: null, rid: 'x' })).data.permit_no !== post(Object.assign(base(), { attachment: null, rid: 'x' })).data.permit_no);
+  // the identical try finishes while this one is uploading its files (both pass the pre-check)
+  const RID2 = 'cd'.repeat(16);
+  const lk2 = G.LockService.getScriptLock(), origTry2 = lk2.tryLock;
+  let inner = null;
+  lk2.tryLock = function () { lk2.tryLock = origTry2; inner = post(Object.assign(base(), { rid: RID2 })); return origTry2.apply(this, arguments); };
+  const rowsB2 = pSheet.getLastRow(), liveB2 = [...gas.files.values()].filter((f) => !f.isTrashed()).length;
+  const outer = post(Object.assign(base(), { rid: RID2 }));
+  check('rid race: both answers name the same permit', inner && inner.ok && outer.ok && inner.data.permit_no === outer.data.permit_no, { inner, outer });
+  check('rid race: one row, the loser\'s uploads trashed', pSheet.getLastRow() === rowsB2 + 1 && [...gas.files.values()].filter((f) => !f.isTrashed()).length === liveB2 + 3);
+  check('rid: deleted permit is not replayed', post({ action: 'delete', session: S, id: first.data.id, resetPassword: RESET_PW }).ok &&
+    post(subBody()).data.token !== first.data.token);
+
+  // -- save_review on a permit another admin rejected / closed meanwhile is refused (nothing written)
+  const R1 = post(Object.assign(base(), { attachment: null })).data;
+  post({ action: 'decide', session: S, id: R1.id, decision: 'reject', comment: 'ไม่ครบ' });
+  const r1Row = rowOf(R1.id), r1Logs = logRows();
+  r = post({ action: 'save_review', session: S, id: R1.id, checklist: { h1: true }, inspections: { owner: { before: { name: 'x' } } } });
+  check('save_review on rejected permit refused', !r.ok && r.code === 'CONFLICT' && /ไม่อนุมัติ/.test(r.error) && rowOf(R1.id) === r1Row && logRows() === r1Logs, r);
+
+  // -- optimistic concurrency (base = updated_at as loaded)
+  const C1 = post(Object.assign(base(), { attachment: null })).data;
+  const loadedA = permitOf(C1.id).updated_at;
+  check('permit carries updated_at', /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(loadedA), loadedA);
+  gas.clock.offset += 2000;
+  r = post({ action: 'save_review', session: S, id: C1.id, base: loadedA, checklist: { h1: true }, inspections: { owner: { before: { name: 'จป. B' } } } });
+  check('save_review with current base ok, returns new updated_at', r.ok && r.data.updated_at && r.data.updated_at !== loadedA, r);
+  const afterB = rowOf(C1.id);
+  gas.clock.offset += 2000;
+  r = post({ action: 'save_review', session: S, id: C1.id, base: loadedA, checklist: {}, inspections: {} });
+  check('stale save_review refused, other admin\'s review kept', !r.ok && r.code === 'CONFLICT' && rowOf(C1.id) === afterB && permitOf(C1.id).inspections.owner.before.name === 'จป. B', r);
+  r = post(editBody({ id: C1.id, base: loadedA, location: 'ใหม่' }));
+  check('stale update_permit refused', !r.ok && r.code === 'CONFLICT' && rowOf(C1.id) === afterB, r);
+  r = post(editBody({ id: C1.id, base: permitOf(C1.id).updated_at, location: 'ใหม่' }));
+  check('update_permit with current base ok', r.ok && r.data.changed.indexOf('location') >= 0 && r.data.permit.updated_at, r);
+  check('no base: last write wins as before', post({ action: 'save_review', session: S, id: C1.id, checklist: {}, inspections: {} }).ok);
+
+  // -- the approval stamp cannot be written / erased through save_review
+  post({ action: 'save_review', session: S, id: C1.id, inspections: { safety: { permit: { name: 'ปลอม' } } } });
+  check('save_review cannot stamp safety.permit on a pending permit', !(permitOf(C1.id).inspections.safety || {}).permit);
+  post({ action: 'decide', session: S, id: C1.id, decision: 'approve', sign: SIG });
+  const stamp1 = permitOf(C1.id).inspections.safety.permit;
+  post({ action: 'save_review', session: S, id: C1.id, inspections: { safety: { permit: { name: '' } } } });
+  check('save_review keeps the approver stamp', JSON.stringify(permitOf(C1.id).inspections.safety.permit) === JSON.stringify(stamp1) && stamp1.name === 'ผู้ดูแลระบบ จป. (ใหม่)', stamp1);
+
+  // -- attachment: the extension of a long file name is checked before the name is shortened
+  const longName = 'ก'.repeat(300) + '.pdf';
+  r = post(Object.assign(base(), { attachment: { name: longName, base64: PDF_B64 } }));
+  const ln = r.ok && post({ action: 'file', no: r.data.permit_no, t: r.data.token }).data;
+  check('long attachment name accepted (stored ≤ 255 chars)', r.ok && ln && ln.mimeType === 'application/pdf' && Array.from(ln.name).length === 255, r);
+
+  // ================================================================ keep-warm
+  check('keepWarm: install', G.installKeepWarmTrigger().installed === 1 && gas.triggers.length === 1 && gas.triggers[0].getHandlerFunction() === 'keepWarm' && gas.triggers[0].minutes === 10);
+  const kw2 = G.installKeepWarmTrigger();
+  check('keepWarm: install is idempotent', kw2.removed === 1 && gas.triggers.length === 1 && kw2.warm.ok, kw2);
+  gas.triggers.push({ getHandlerFunction: () => 'otherJob' });
+  check('keepWarm: remove leaves other triggers', G.removeKeepWarmTrigger() === 1 && gas.triggers.length === 1 && gas.triggers[0].getHandlerFunction() === 'otherJob');
+  gas.triggers.length = 0;
+  clearReadCache();
+  const dvKw = dvNow(), writesKw = gas.stats.writes, rowsKw = pSheet.getLastRow();
+  const kw = readsOf(() => G.keepWarm());
+  check('keepWarm: ok, reads only the permits sheet once', kw.out.ok && JSON.stringify(kw.reads) === '{"permits":1}', kw);
+  check('keepWarm: no sheet write, data version unchanged', gas.stats.writes === writesKw && pSheet.getLastRow() === rowsKw && dvNow() === dvKw);
+  check('keepWarm: dashboard served from cache (only the session check reads)', JSON.stringify(readsOf(() => post({ action: 'dashboard', session: S })).reads) === '{"users":1}');
+  check('keepWarm: default + pending lists and stats served from cache', JSON.stringify(readsOf(() => {
+    post({ action: 'permits', session: S }); post({ action: 'permits', session: S, status: 'pending' }); get({ action: 'stats' });
+    const mx = post({ action: 'poll', session: S }).data.max_id; post({ action: 'poll', session: S, since: mx });
+  }).reads) === '{"users":4}');
+  const kwVals = [...gas.cacheStore.entries()].filter(([k]) => k.startsWith('wpc_')).map(([, e]) => e.v).join('\n');
+  check('keepWarm: cache holds no tokens / signatures / password data', kwVals.length > 0 && !/data:image|base64|password_hash|"salt"|"token"/.test(kwVals));
+  gas.clock.offset += 400 * 1000; // past the normal 300 s TTL, before the next 10 min run
+  S = post({ action: 'login', username: 'admin', password: 'Brand-New-1' }).data.session;
+  check('keepWarm: values stay hot until the next run', JSON.stringify(readsOf(() => post({ action: 'dashboard', session: S })).reads) === '{"users":1}');
+  write('submit after keepWarm', () => post(Object.assign(base(), { attachment: null })));
+  check('keepWarm: a write still invalidates warmed values', post({ action: 'permits', session: S }).data.rows.length === pSheet.getLastRow() - 1);
+  const ssProp = gas.propStore.WP_SPREADSHEET_ID;
+  delete gas.propStore.WP_SPREADSHEET_ID;
+  check('keepWarm before setup: skipped quietly', G.keepWarm().ok === false);
+  gas.propStore.WP_SPREADSHEET_ID = ssProp;
+
+  // ================================================================ single-file paste (all .gs concatenated in order)
+  const allGs = GS_ORDER.map((f) => fs.readFileSync(path.join(ROOT, 'apps-script', f), 'utf8')).join('\n');
+  const tops = {};
+  (allGs.match(/^(?:var|let|const|function)\s+[A-Za-z_$][\w$]*/gm) || []).forEach((m) => { const n = m.split(/\s+/)[1]; tops[n] = (tops[n] || 0) + 1; });
+  const dups = Object.keys(tops).filter((n) => tops[n] > 1);
+  check('concatenated .gs: no duplicate top-level names', dups.length === 0, dups);
+  check('concatenated .gs: no top-level let/const (redeclaration errors across files)', !/^(?:let|const)\s/m.test(allGs));
+  const g1 = createGas();
+  require('vm').runInContext(allGs, g1.context, { filename: 'all.gs' });
+  g1.context.now_ = () => new Date(BKK('2026-10-07T10:00:00'));
+  g1.propStore.WP_INITIAL_ADMIN_PASSWORD = 'Single-File-1';
+  g1.context.setupSystem();
+  const post1 = (b) => JSON.parse(g1.context.doPost({ postData: { contents: JSON.stringify(b) } }).getContent());
+  const s1x = post1({ action: 'login', username: 'admin', password: 'Single-File-1' });
+  const sub1 = post1(Object.assign(base(), { attachment: null }));
+  check('concatenated .gs: setup + login + submit + dashboard + keepWarm work', s1x.ok && sub1.ok && post1({ action: 'dashboard', session: s1x.data.session }).data.cnt.pending === 1 &&
+    g1.context.keepWarm().ok, { s1x, sub1 });
+
   // ================================================================ invariants
   check('every sheet write happened under LockService', gas.stats.unlockedWrites === 0, gas.stats.unlockedWrites);
   check('no server errors logged', !gas.logs.some((l) => l.startsWith('ERROR')), gas.logs.filter((l) => l.startsWith('ERROR')));

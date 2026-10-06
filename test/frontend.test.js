@@ -29,10 +29,13 @@ module.exports = async function run() {
   // ---- backend
   const gas = createGas();
   gas.load(path.join(ROOT, 'apps-script'), ['Data.gs', 'Code.gs', 'Auth.gs', 'Permits.gs', 'Setup.gs']);
+  // fixed server clock: permit numbers below (WP-20261005-...) must not depend on the day the tests run
+  gas.clock.offset = new Date('2026-10-05T09:00:00+07:00').getTime() - Date.now();
   gas.propStore.WP_INITIAL_ADMIN_PASSWORD = 'Front-End-Test-1';
   gas.context.setupSystem();
   let oldBackend = false; // simulate a deployment without action=batch
   const calls = [];
+  let onServer = null; // runs after the server answered, before the browser sees it (e.g. another tab acts)
   const fetchMock = async (url, opts = {}) => {
     let out;
     if ((opts.method || 'GET') === 'POST') {
@@ -47,6 +50,7 @@ module.exports = async function run() {
       out = gas.context.doGet({ parameter: Object.fromEntries(u.searchParams) });
     }
     const text = out.getContent();
+    if (onServer) { const f = onServer; onServer = null; f(); }
     return { status: 200, json: async () => JSON.parse(text) };
   };
 
@@ -91,7 +95,7 @@ module.exports = async function run() {
 
   // ---- AUTH inside a batch still logs the browser out
   const keep = WP.session;
-  WP.session = 'f'.repeat(64);
+  WP.saveSession('f'.repeat(64), singles[0].data); // the stored session itself has expired on the server
   r = await Promise.all([WP.read('me'), WP.read('dashboard')]);
   check('batched AUTH clears the session', r.every((x) => x.code === 'AUTH') && WP.session === null && localStorage.getItem('wp_session_v1') === null, r);
   WP.saveSession(keep, singles[0].data);
@@ -141,6 +145,82 @@ module.exports = async function run() {
   check('anonymous admin view: error painted, nothing cached', paints.join() === 'error:AUTH' && !ss.keys().some((k) => k.startsWith('wp_swr:')), { paints, keys: ss.keys() });
   await W.swr('stats', {}, render, { anon: true, fetch: () => W.get('stats') });
   check('public stats cached for the tab', ss.keys().some((k) => k === 'wp_swr:anon:stats:{}'));
+
+  // ---- session expiry while a form is open (admin layout)
+  const A = ctx.WP;
+  A.layout = 'admin';
+  const login = async () => (await A.api('login', { username: 'admin', password: 'Front-End-Test-1' })).data;
+  const revoke = (tok) => gas.context.doPost({ postData: { contents: JSON.stringify({ action: 'logout', session: tok }) } });
+  let L = await login();
+  A.saveSession(L.session, L.user);
+  revoke(L.session);
+  ctx.location.href = '';
+  r = await A.api('decide', { id: 99, decision: 'reject', comment: 'x' });
+  check('expired session on a write: error returned, page NOT left (form kept)', r.code === 'AUTH' && ctx.location.href === '' && r.msg.includes(A.AUTH_KEEP_MSG) && A.session === null, { r, href: ctx.location.href });
+  L = await login(); A.saveSession(L.session, L.user); revoke(L.session); ctx.location.href = '';
+  r = await A.read('poll', { since: 0 }, { quiet: true });
+  check('expired session on the background poll: page NOT left', r.code === 'AUTH' && ctx.location.href === '', { r, href: ctx.location.href });
+  r = await A.api('file', { id: 1 }, { quiet: true });
+  check('expired session when opening an attachment: page NOT left', r.code === 'AUTH' && ctx.location.href === '');
+  L = await login(); A.saveSession(L.session, L.user); revoke(L.session); ctx.location.href = '';
+  r = await A.read('dashboard');
+  check('expired session on a page-load read: goes to login as before', r.code === 'AUTH' && /login\.html\?expired=1$/.test(ctx.location.href), ctx.location.href);
+  // re-login in another tab while this tab still holds the old token
+  const old = await login(); A.saveSession(old.session, old.user); revoke(old.session);
+  const fresh = await login();
+  localStorage.setItem('wp_session_v1', JSON.stringify({ token: fresh.session, user: fresh.user, exp: Date.now() + 3600e3 })); // the other tab
+  calls.length = 0;
+  r = await A.api('decide', { id: 99, decision: 'reject', comment: 'x' });
+  check('after re-login in another tab: the next save uses the new session', r.code === 'NOT_FOUND' && A.session === fresh.session, r);
+  // the old token fails while the other tab logs in: the new session must survive
+  const old2 = await login(); A.saveSession(old2.session, old2.user); revoke(old2.session);
+  const fresh2 = await login();
+  onServer = () => localStorage.setItem('wp_session_v1', JSON.stringify({ token: fresh2.session, user: fresh2.user, exp: Date.now() + 3600e3 }));
+  r = await A.api('decide', { id: 99, decision: 'reject', comment: 'x' });
+  check('a stale tab AUTH does not wipe the session another tab just stored', r.code === 'AUTH' && JSON.parse(localStorage.getItem('wp_session_v1')).token === fresh2.session, r);
+  A.layout = undefined; ctx.location.href = '';
+
+  // ---- WP.busy: a double click while a save is running sends one request
+  let runs = 0;
+  const hb = A.busy(async () => { runs++; await tick(); });
+  await Promise.all([hb(), hb(), hb()]);
+  await hb();
+  check('busy: re-entry ignored, next click runs again', runs === 2, runs);
+
+  // ---- signature pad (app.js) on a phone: fractional CSS width, URL bar show/hide fires "resize"
+  {
+    const winListeners = {};
+    const canvas = {
+      _w: 300, _h: 150, rect: { width: 343.3, height: 170 },
+      get width() { return this._w; }, set width(v) { this._w = Math.floor(v); }, // canvas sizes are integers (truncated)
+      get height() { return this._h; }, set height(v) { this._h = Math.floor(v); },
+      getBoundingClientRect() { return this.rect; },
+      getContext() { return { setTransform() {}, clearRect() {}, beginPath() {}, arc() {}, fill() {}, moveTo() {}, lineTo() {}, stroke() {}, drawImage() {} }; },
+      addEventListener() {}, toDataURL() { return 'data:image/png;base64,AAAA'; }
+    };
+    const wrap = { querySelector: (s) => (s === 'canvas' ? canvas : null), classList: { add() {}, remove() {} } };
+    const none = { querySelector: () => null, querySelectorAll: () => [] };
+    const dctx = {
+      WP: { esc: (x) => String(x) }, devicePixelRatio: 2,
+      document: Object.assign({ addEventListener() {}, body: {} }, none),
+      addEventListener: (ev, fn) => { (winListeners[ev] = winListeners[ev] || []).push(fn); },
+      setTimeout: () => 0, setInterval: () => 0, matchMedia: () => ({ matches: true }),
+      IntersectionObserver: class { observe() {} unobserve() {} }, Image: class {}, Math, Array, Object, String, Date
+    };
+    dctx.window = dctx;
+    vm.createContext(dctx);
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'docs/assets/js/app.js'), 'utf8'), dctx);
+    const pad = new dctx.WP.SignaturePad(wrap);
+    pad.empty = false; // signed
+    let redraws = 0;
+    pad.load = () => { redraws++; };
+    (winListeners.resize || []).forEach((fn) => fn());
+    (winListeners.resize || []).forEach((fn) => fn());
+    check('signature pad: a resize with an unchanged width does not re-draw (blur) the signature', redraws === 0 && canvas.width === 687, { redraws, w: canvas.width });
+    canvas.rect = { width: 700, height: 170 };
+    (winListeners.resize || []).forEach((fn) => fn());
+    check('signature pad: a real width change (rotation) still keeps the signature', redraws === 1 && canvas.width === 1400, { redraws, w: canvas.width });
+  }
 
   // ---- one-shot hand-over (track / submit → status page)
   r = await W.api('track', { permit_no: 'WP-20261005-001', phone: '0812345678', with_permit: true });

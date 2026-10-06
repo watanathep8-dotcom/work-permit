@@ -162,8 +162,9 @@ function checkSignature_(s) {
 /** Attachment rules of api.php: ≤ UPLOAD_MAX_MB, pdf/jpg/jpeg/png/xls/xlsx/doc/docx. */
 function checkAttachment_(a) {
   if (!a || typeof a !== 'object' || !a.base64) return null;
-  var name = str_(a.name, 255);
-  var ext = name.indexOf('.') >= 0 ? name.split('.').pop().toLowerCase() : '';
+  var full = str_(a.name, 100000);
+  var ext = full.indexOf('.') >= 0 ? full.split('.').pop().toLowerCase() : '';
+  var name = str_(full, 255);
   var maxBytes = WP_DATA.config.uploadMaxMb * 1048576;
   if (WP_DATA.config.uploadExt.indexOf(ext) < 0) fail_('ชนิดไฟล์ไม่รองรับ');
   var b64 = String(a.base64).replace(/\s+/g, '');
@@ -229,7 +230,7 @@ function permitOut_(r) {
     has_owner_sign: !!r.owner_sign_file, has_approver_sign: !!r.approver_sign_file,
     status: r.status, es: effectiveStatus_(r), end_ts: permitEndTs_(r),
     approver_name: r.approver_name, approve_comment: r.approve_comment,
-    approved_at: r.approved_at, closed_at: r.closed_at, created_at: r.created_at
+    approved_at: r.approved_at, closed_at: r.closed_at, created_at: r.created_at, updated_at: r.updated_at
   };
 }
 
@@ -346,6 +347,33 @@ function cleanRequestFields_(d, keep) {
   return f;
 }
 
+/**
+ * Double-submit guard: the request form sends a random `rid` (32 hex) once per
+ * filled form. A retried submit with the same rid (the answer was lost on a bad
+ * connection, a double tap) gets the permit that was already created instead of a
+ * duplicate. The cache keeps only the permit id + number and a hash of its token.
+ */
+var WP_SUBMIT_RID_TTL = 3600;
+function submitRidKey_(d) {
+  var rid = String(d.rid || '').toLowerCase();
+  return /^[a-f0-9]{32}$/.test(rid) ? 'wpsub_' + rid : '';
+}
+function submitReplay_(ctx, key) {
+  var o = key ? jdec_(cache_().get(key), null) : null;
+  if (!o) return null;
+  var r = findById_(table_(ctx, 'permits'), o.id);
+  return (r && r.permit_no === o.no && sha256Hex_(r.token).substring(0, 32) === o.th) ? r : null;
+}
+function submitOut_(ctx, row, d) {
+  var path = 'track.html?no=' + encodeURIComponent(row.permit_no) + '&t=' + row.token;
+  var site = String(props_().getProperty(WP_PROP_SITE_URL) || '').replace(/\/+$/, '');
+  var out = { id: Number(row.id), permit_no: row.permit_no, token: row.token, track_path: path, track_url: site ? site + '/' + path : '' };
+  // Optional: the status page data (= action permit with no + t) so the browser
+  // can show it without another round-trip. Built from the values as stored.
+  if (d.with_permit) out.view = { permit: permitOut_(row), logs: logsFor_(ctx, row.id) };
+  return out;
+}
+
 /** api.php?action=submit — anonymous, like the original. */
 function apiSubmit_(d) {
   var fields = cleanRequestFields_(d, null);
@@ -353,6 +381,11 @@ function apiSubmit_(d) {
   if (!reqSign) fail_('กรุณาลงลายมือชื่อผู้ขออนุญาต');
   var ownSign = checkSignature_(d.owner_sign);
   var att = checkAttachment_(d.attachment);
+  var ridKey = submitRidKey_(d);
+  if (ridKey) { // already created by an earlier try: answer the same, create nothing
+    var rctx = { tables: {} }, prev = submitReplay_(rctx, ridKey);
+    if (prev) return submitOut_(rctx, prev, d);
+  }
 
   var row = Object.assign({}, fields, {
     inspections: '{}', status: 'pending',
@@ -374,6 +407,12 @@ function apiSubmit_(d) {
     return withLock_(function () {
       var ctx = { tables: {} };
       var t = table_(ctx, 'permits');
+      var prev = submitReplay_(ctx, ridKey); // an identical try finished while this one uploaded its files
+      if (prev) {
+        created.forEach(trashDriveFile_);
+        created = [];
+        return submitOut_(ctx, prev, d);
+      }
       // numbering: WP-YYYYMMDD-NNN (per Bangkok day, 3-digit running number)
       var prefix = 'WP-' + Utilities.formatDate(now_(), WP_TZ, 'yyyyMMdd') + '-';
       var seq = 0;
@@ -387,13 +426,12 @@ function apiSubmit_(d) {
       row.created_at = row.updated_at = nowStr_();
       appendRow_(t, row);
       addLog_(ctx, row.id, 'submit', row.requester_name, 'ยื่นใบขออนุญาตปฏิบัติงาน');
-      var path = 'track.html?no=' + encodeURIComponent(row.permit_no) + '&t=' + row.token;
-      var site = String(props_().getProperty(WP_PROP_SITE_URL) || '').replace(/\/+$/, '');
-      var out = { id: row.id, permit_no: row.permit_no, token: row.token, track_path: path, track_url: site ? site + '/' + path : '' };
-      // Optional: the status page data (= action permit with no + t) so the browser
-      // can show it without another round-trip. Built from the values as stored.
-      if (d.with_permit) out.view = { permit: permitOut_(storedRow_(t, row)), logs: logsFor_(ctx, row.id) };
-      return out;
+      if (ridKey) {
+        try {
+          cache_().put(ridKey, JSON.stringify({ id: row.id, no: row.permit_no, th: sha256Hex_(row.token).substring(0, 32) }), WP_SUBMIT_RID_TTL);
+        } catch (e) { console.warn('submit rid not cached'); }
+      }
+      return submitOut_(ctx, t.rows[t.rows.length - 1], d); // the row as stored
     });
   } catch (err) {
     created.forEach(trashDriveFile_);
@@ -455,7 +493,11 @@ function apiPoll_(p, ctx) {
   requireAdmin_(p, ctx);
   var hasSince = p.since !== undefined && p.since !== null && p.since !== '';
   var since = hasSince ? Number(p.since) || 0 : null;
-  // Cheap while nothing changes: one cached value per (data version, since).
+  return pollCached_(ctx, hasSince, since);
+}
+
+/** Cheap while nothing changes: one cached value per (data version, since). Also used by keepWarm. */
+function pollCached_(ctx, hasSince, since) {
   return cachedRead_(ctx, 'poll', { since: since }, function () {
     var rows = table_(ctx, 'permits').rows;
     var pending = 0, max = 0;
@@ -474,13 +516,17 @@ function apiPoll_(p, ctx) {
 function apiDashboard_(p, ctx) {
   var u = requireAdmin_(p, ctx);
   // aggregates are the same for every admin: cached once, the user is added per request
-  var agg = cachedRead_(ctx, 'dashboard', null, function () {
-    return { data: dashboardAgg_(ctx), until: permitsValidUntil_(table_(ctx, 'permits').rows) };
-  });
+  var agg = dashboardCached_(ctx);
   return {
     user: publicUser_(u), cnt: agg.cnt, byType: agg.byType,
     days: agg.days, pending: agg.pending, activeNow: agg.activeNow
   };
+}
+
+function dashboardCached_(ctx) {
+  return cachedRead_(ctx, 'dashboard', null, function () {
+    return { data: dashboardAgg_(ctx), until: permitsValidUntil_(table_(ctx, 'permits').rows) };
+  });
 }
 
 function dashboardAgg_(ctx) {
@@ -517,6 +563,10 @@ function apiPermits_(p, ctx) {
   var from = /^\d{4}-\d{2}-\d{2}$/.test(String(p.from || '')) ? p.from : '';
   var to = /^\d{4}-\d{2}-\d{2}$/.test(String(p.to || '')) ? p.to : '';
   var status = String(p.status || '');
+  return permitsCached_(ctx, q, type, from, to, status);
+}
+
+function permitsCached_(ctx, q, type, from, to, status) {
   return cachedRead_(ctx, 'permits', { q: q, type: type, from: from, to: to, status: status }, function () {
     return { data: permitsList_(ctx, q, type, from, to, status), until: permitsValidUntil_(table_(ctx, 'permits').rows) };
   });
@@ -540,6 +590,19 @@ function permitsList_(ctx, q, type, from, to, status) {
   return { rows: rows, counts: counts };
 }
 
+/**
+ * Optimistic concurrency for the review / edit forms: `base` is the permit's
+ * updated_at as the caller loaded it. If another write happened since, the
+ * request is refused instead of silently overwriting that change (callers that
+ * send no base keep the old last-write-wins behaviour).
+ */
+function checkBase_(p, d) {
+  if (d.base === undefined || d.base === null || d.base === '') return;
+  if (String(d.base) !== String(p.updated_at)) {
+    fail_('ใบอนุญาตนี้ถูกแก้ไขโดยผู้ใช้อื่นหลังจากที่คุณเปิดหน้านี้ — ยังไม่ได้บันทึก กรุณาโหลดหน้าใหม่แล้วทำรายการอีกครั้ง', 'CONFLICT');
+  }
+}
+
 /** api.php?action=save_review — checklist / LOTO / confined / inspection signatures. */
 function apiSaveReview_(d, ctx) {
   requireAdmin_(d, ctx);
@@ -549,6 +612,11 @@ function apiSaveReview_(d, ctx) {
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
     if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
+    // another จป. may have rejected / closed it (or saved it) since this page was opened
+    if (p.status !== 'pending' && p.status !== 'approved') {
+      fail_('ใบอนุญาตนี้อยู่ในสถานะ "' + WP_DATA.status[p.status].label + '" แล้ว บันทึกผลการตรวจสอบไม่ได้ กรุณาโหลดหน้าใหม่', 'CONFLICT');
+    }
+    checkBase_(p, d);
     var ins = jdec_(p.inspections, {});
     if (Array.isArray(ins)) ins = {};
     var din = (d.inspections && typeof d.inspections === 'object') ? d.inspections : {};
@@ -557,6 +625,7 @@ function apiSaveReview_(d, ctx) {
       var role = (din[rk] && typeof din[rk] === 'object') ? din[rk] : {};
       if (!ins[rk] || typeof ins[rk] !== 'object' || Array.isArray(ins[rk])) ins[rk] = {};
       Object.keys(WP_DATA.inspectStages).forEach(function (sk) {
+        if (rk === 'safety' && sk === 'permit') return; // the approval stamp is set by decide (approve) only
         var name = str_(role[sk] && role[sk].name, 150);
         var old = ins[rk][sk];
         if (name === '') { delete ins[rk][sk]; return; }
@@ -572,7 +641,7 @@ function apiSaveReview_(d, ctx) {
     p.updated_at = stamp;
     writeRow_(t, p);
     if (d.log) addLog_(ctx, p.id, 'review', u.fullname, 'บันทึกผลการตรวจสอบ');
-    return { inspections: ins };
+    return { inspections: ins, updated_at: p.updated_at };
   });
 }
 
@@ -737,6 +806,7 @@ function apiUpdatePermit_(d, ctx) {
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
     if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
+    checkBase_(p, d);
     var f = cleanRequestFields_(d, p);
     var changed = Object.keys(WP_REQUEST_FIELDS).filter(function (k) { return !sameValue_(p[k], f[k]); });
     if (!changed.length) return { changed: [], permit: permitOut_(p) };

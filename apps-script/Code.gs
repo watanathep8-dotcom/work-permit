@@ -9,7 +9,7 @@
  *   Code.gs     — router (doGet/doPost), response helpers, sheet "DB" helpers, utilities
  *   Auth.gs     — password hashing, login/logout/sessions (CacheService), user management
  *   Permits.gs  — permit actions (submit, track, list, view, review, decide, edit, delete, reset, files)
- *   Setup.gs    — setupSystem() (run once from the editor)
+ *   Setup.gs    — setupSystem() (run once from the editor), keepWarm() + its 10-min trigger
  *   Data.gs     — reference data (companies, checklists, rules) — single source of truth
  *
  * Transport (same as our SDS project):
@@ -172,6 +172,7 @@ function apiBatch_(p, ctx) {
  */
 var WP_DV_KEY = 'wpdv';
 var WP_READ_CACHE_TTL = 300;  // s
+var WP_WARM_TTL = 660;        // s — values refreshed by keepWarm (every 10 min) live until just after its next run
 var WP_CACHE_CHUNK = 30000;   // chars per cache value: ≤ 90 KB even if every char is 3-byte UTF-8 (limit 100 KB)
 var WP_CACHE_MAX_CHUNKS = 20;
 
@@ -228,13 +229,14 @@ function cachePutBig_(key, str, ttl) {
 function cachedRead_(ctx, name, params, compute) {
   var key = 'wpc_' + dataVersion_(ctx) + '_' + name + '_' + sha256Hex_(JSON.stringify(params || {})).substring(0, 32);
   var now = nowTs_();
-  var hit = cacheGetBig_(key);
+  // keepWarm (ctx.warm): always recompute, and keep the value until shortly after the next run
+  var hit = ctx && ctx.warm ? null : cacheGetBig_(key);
   if (hit) {
     var o = jdec_(hit, null);
     if (o && Number(o.u) > now && Object.prototype.hasOwnProperty.call(o, 'd')) return o.d;
   }
   var res = compute();
-  var ttl = Math.min(WP_READ_CACHE_TTL, Math.floor(res.until) - now);
+  var ttl = Math.min(ctx && ctx.warm ? WP_WARM_TTL : WP_READ_CACHE_TTL, Math.floor(res.until) - now);
   if (ttl >= 1) cachePutBig_(key, JSON.stringify({ u: res.until, d: res.data }), ttl);
   return res.data;
 }

@@ -236,9 +236,36 @@ function createGas() {
     }
   };
 
+  // ------------------------------------------------------------ ScriptApp (time-driven triggers)
+  const triggers = [];
+  class Trigger {
+    constructor(fn, minutes) { this.id = newId('trigger'); this.fn = fn; this.minutes = minutes; }
+    getHandlerFunction() { return this.fn; }
+    getUniqueId() { return this.id; }
+  }
+  const ScriptApp = {
+    newTrigger(fn) {
+      let minutes = null;
+      const b = {
+        timeBased() { return b; },
+        everyMinutes(n) {
+          if ([1, 5, 10, 15, 30].indexOf(n) < 0) throw new Error('everyMinutes: 1, 5, 10, 15 or 30 only');
+          minutes = n; return b;
+        },
+        create() {
+          if (!minutes) throw new Error('trigger without a schedule');
+          const t = new Trigger(fn, minutes); triggers.push(t); return t;
+        }
+      };
+      return b;
+    },
+    getProjectTriggers() { return triggers.slice(); },
+    deleteTrigger(t) { const i = triggers.indexOf(t); if (i < 0) throw new Error('no such trigger'); triggers.splice(i, 1); }
+  };
+
   const logs = [];
   const context = {
-    SpreadsheetApp, DriveApp, PropertiesService, CacheService, LockService, Utilities, ContentService,
+    SpreadsheetApp, DriveApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp,
     Logger: { log: (m) => logs.push(String(m)) },
     console: { log: (...a) => logs.push('LOG ' + a.join(' ')), warn() {}, error: (...a) => logs.push('ERROR ' + a.join(' ')) },
     JSON, Math, Date, Object, Array, String, Number, Boolean, RegExp, Error, encodeURIComponent, parseInt, parseFloat, isNaN
@@ -246,7 +273,7 @@ function createGas() {
   vm.createContext(context);
 
   return {
-    context, clock, stats, propStore, cacheStore, files, folders, spreadsheets, logs,
+    context, clock, stats, propStore, cacheStore, files, folders, spreadsheets, logs, triggers,
     load(dir, order) {
       order.forEach((f) => vm.runInContext(fs.readFileSync(path.join(dir, f), 'utf8'), context, { filename: f }));
       // single clock source for the app (Code.gs now_()) follows the mock clock

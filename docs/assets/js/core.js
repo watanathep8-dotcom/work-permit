@@ -60,6 +60,18 @@
     WP.user = user;
   };
   WP.clearSession = () => { WP.swrClear(); try { localStorage.removeItem(SKEY); } catch { } WP.session = null; WP.user = null; WP.admin = false; };
+  // The server refused `token`: forget it here, but never wipe a newer session that
+  // another tab has stored meanwhile (re-login in a new tab while this one waits).
+  const dropSession = token => {
+    if (WP.session === token) { WP.session = null; WP.user = null; WP.admin = false; }
+    const s = WP.loadSession();
+    if (!s || s.token === token) WP.clearSession();
+  };
+  // A session stored by another tab (e.g. re-login after expiry) is picked up by the next call.
+  const adoptSession = () => {
+    const s = WP.loadSession();
+    if (s && s.token !== WP.session) { WP.session = s.token; WP.user = s.user; WP.admin = true; }
+  };
   const S = WP.loadSession();
   WP.session = S ? S.token : null;
   WP.user = S ? S.user : null;
@@ -67,12 +79,20 @@
 
   // ---------- API ----------
   const noApi = () => ({ ok: false, code: 'NO_API', error: 'ยังไม่ได้ตั้งค่า apiUrl ใน docs/config.js', msg: 'ยังไม่ได้ตั้งค่า apiUrl ใน docs/config.js' });
-  const finish = j => {
+  WP.AUTH_KEEP_MSG = ' — ข้อมูลที่กรอกยังอยู่ในหน้านี้: เปิดหน้าเข้าสู่ระบบในแท็บใหม่ แล้วกลับมากดอีกครั้ง';
+  /**
+   * opts.sent: session token the request carried. On AUTH that token is dropped.
+   * Only a page-load read (not opts.write / opts.quiet) jumps to the login page —
+   * a write or a background read (poll, attachment) must not throw away what the
+   * user has typed / signed on this page; the error is returned to the caller.
+   */
+  const finish = (j, opts = {}) => {
     if (!j || typeof j !== 'object') j = { ok: false, error: 'เซิร์ฟเวอร์ตอบกลับไม่ถูกต้อง' };
     j.msg = j.error || '';
-    if (!j.ok && j.code === 'AUTH' && WP.session) {
-      WP.clearSession();
-      if (WP.layout === 'admin' || WP.requireAdmin) location.href = WP.base + '/login.html?expired=1';
+    if (!j.ok && j.code === 'AUTH' && opts.sent) {
+      dropSession(opts.sent);
+      if (opts.write || opts.quiet) j.msg += WP.AUTH_KEEP_MSG;
+      else if (WP.layout === 'admin' || WP.requireAdmin) location.href = WP.base + '/login.html?expired=1';
     }
     return j;
   };
@@ -80,14 +100,20 @@
   const READS = new Set(['me', 'poll', 'dashboard', 'permits', 'users', 'permit', 'stats', 'file', 'track', 'ping', 'config', 'batch']);
   // Writes and anything carrying a secret: POST, text/plain JSON body (no CORS preflight).
   let writes = 0;
-  WP.api = async (action, data = {}) => {
-    if (READS.has(action)) return post(action, data);
+  WP.api = async (action, data = {}, opts = {}) => {
+    if (READS.has(action)) return post(action, data, opts);
     writes++; WP.swrClear();
-    try { return await post(action, data); } finally { writes++; WP.swrClear(); }
+    try { return await post(action, data, Object.assign({}, opts, { write: true })); } finally { writes++; WP.swrClear(); }
   };
-  const post = async (action, data) => {
+  const post = async (action, data, opts = {}) => {
     if (!WP.apiUrl) return noApi();
+    const x = await send(action, data);
+    return finish(x.j, Object.assign({}, opts, { sent: x.sent }));
+  };
+  // One POST round-trip: the raw answer + the session token it carried.
+  const send = async (action, data) => {
     const body = Object.assign({}, data, { action });
+    if (!('session' in data)) adoptSession();
     if (WP.session && !('session' in data)) body.session = WP.session;
     let j;
     try {
@@ -99,7 +125,7 @@
     } catch (e) {
       j = { ok: false, code: 'NETWORK', error: 'เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่' };
     }
-    return finish(j);
+    return { j, sent: body.session };
   };
   // ---------- batched reads ----------
   // Read actions requested while the page starts (layout: me, app: poll, page: its
@@ -110,12 +136,13 @@
   let noBatch = false;
   try { noBatch = sessionStorage.getItem(NB) === WP.apiUrl; } catch { }
   let queue = null;
-  const single = c => WP.api(c.action, c.data).then(c.resolve);
+  const single = c => WP.api(c.action, c.data, c.opts).then(c.resolve);
   const flush = async () => {
     const q = queue; queue = null;
     if (q.length === 1 || noBatch) return q.forEach(single);
-    const r = await WP.api('batch', { calls: q.map(c => Object.assign({}, c.data, { action: c.action })) });
-    if (r.ok && Array.isArray(r.data) && r.data.length === q.length) return q.forEach((c, i) => c.resolve(finish(r.data[i])));
+    const x = await send('batch', { calls: q.map(c => Object.assign({}, c.data, { action: c.action })) });
+    const r = finish(x.j);
+    if (r.ok && Array.isArray(r.data) && r.data.length === q.length) return q.forEach((c, i) => c.resolve(finish(r.data[i], Object.assign({}, c.opts, { sent: x.sent }))));
     if (r.code === 'NOT_FOUND') {
       noBatch = true;
       try { sessionStorage.setItem(NB, WP.apiUrl); } catch { }
@@ -123,11 +150,12 @@
     }
     q.forEach(c => c.resolve(Object.assign({}, r)));
   };
-  WP.read = (action, data = {}) => {
-    if (!WP.apiUrl || !BATCHABLE.has(action) || 'session' in data) return WP.api(action, data);
+  // opts.quiet: a background read (e.g. the 15 s poll) — an expired session does not leave the page.
+  WP.read = (action, data = {}, opts = {}) => {
+    if (!WP.apiUrl || !BATCHABLE.has(action) || 'session' in data) return WP.api(action, data, opts);
     return new Promise(resolve => {
       if (!queue) { queue = []; WP.ready.then(() => setTimeout(flush, 0)); }
-      queue.push({ action, data, resolve });
+      queue.push({ action, data, opts, resolve });
     });
   };
 
@@ -159,6 +187,16 @@
       render(r);
     }
     return r;
+  };
+
+  /** Wraps an async handler so it runs once at a time: a double click / tap while it works is ignored. */
+  WP.busy = fn => {
+    let running = false;
+    return async function (...args) {
+      if (running) return;
+      running = true;
+      try { return await fn.apply(this, args); } finally { running = false; }
+    };
   };
 
   // ---------- one-shot hand-over of a permit view to the next page ----------

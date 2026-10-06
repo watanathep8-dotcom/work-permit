@@ -115,3 +115,54 @@ function setupSystem() {
     lock.releaseLock();
   }
 }
+
+// ---------------------------------------------------------------- keep-warm (optional)
+/**
+ * keepWarm() — run by a time trigger every 10 minutes (installKeepWarmTrigger()).
+ * Recomputes the shared read caches that every visit needs first: public stats,
+ * dashboard aggregates, the default / "pending" permits lists and the bell poll.
+ * Only values the request path already caches (admin-wide data and public
+ * aggregates — never a tracking token, a session, a file or a signature).
+ * It writes no sheet row and never replaces the data version: values are stored
+ * under the current version, so any later write still makes them unreachable.
+ * Side effect: the script runtime is exercised regularly, which MAY shorten
+ * Google's web-app cold start — Google does not guarantee that.
+ */
+var WP_KEEPWARM_HANDLER = 'keepWarm';
+var WP_KEEPWARM_MINUTES = 10;
+
+function keepWarm() {
+  var t0 = Date.now();
+  if (!props_().getProperty(WP_PROP_SPREADSHEET)) return { ok: false, skipped: 'setupSystem() ยังไม่ได้รัน' };
+  try {
+    var ctx = { tables: {}, user: null, warm: true };
+    apiStats_({}, ctx);
+    dashboardCached_(ctx);
+    permitsCached_(ctx, '', '', '', '', '');          // admin/permits.html
+    permitsCached_(ctx, '', '', '', '', 'pending');   // admin/permits.html?status=pending
+    var poll = pollCached_(ctx, false, null);         // first poll of every admin page
+    pollCached_(ctx, true, poll.max_id);              // the 15 s poll of open admin pages
+    return { ok: true, ms: Date.now() - t0 };
+  } catch (e) {
+    console.warn('keepWarm failed: ' + (e && e.message ? e.message : e));
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+/** Run once from the editor. Idempotent: replaces any existing keepWarm trigger with one every 10 minutes. */
+function installKeepWarmTrigger() {
+  var removed = removeKeepWarmTrigger();
+  ScriptApp.newTrigger(WP_KEEPWARM_HANDLER).timeBased().everyMinutes(WP_KEEPWARM_MINUTES).create();
+  var result = { removed: removed, installed: 1, everyMinutes: WP_KEEPWARM_MINUTES, warm: keepWarm() };
+  Logger.log(JSON.stringify(result));
+  return result;
+}
+
+/** Removes every keepWarm trigger of this project. Returns how many were removed. */
+function removeKeepWarmTrigger() {
+  var n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === WP_KEEPWARM_HANDLER) { ScriptApp.deleteTrigger(t); n++; }
+  });
+  return n;
+}

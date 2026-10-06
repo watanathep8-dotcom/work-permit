@@ -155,7 +155,9 @@
     }
     resize() {
       const r = this.cv.getBoundingClientRect(), d = Math.min(devicePixelRatio || 1, 2);
-      this.cv.width = r.width * d; this.cv.height = r.height * d; this.ctx.setTransform(d, 0, 0, d, 0, 0);
+      // rounded like the check in the resize listener: a truncated fractional width would
+      // never match it, so every mobile scroll (URL bar → resize) re-drew and blurred the signature
+      this.cv.width = Math.round(r.width * d); this.cv.height = Math.round(r.height * d); this.ctx.setTransform(d, 0, 0, d, 0, 0);
       this.ctx.lineCap = 'round'; this.ctx.lineJoin = 'round'; this.ctx.strokeStyle = '#d9fbe8'; this.ctx.fillStyle = '#d9fbe8';
     }
     mark() { if (this.empty) { this.empty = false; this.wrap.classList.add('signed'); } }
@@ -321,7 +323,7 @@
     const r = await WP.api(action, Object.assign({}, data, { resetPassword: pw }));
     // The server checks the password before validating anything else, so a
     // validation / not-found error still means the password was right.
-    if (r.ok || ['BAD_REQUEST', 'TOO_LARGE', 'NOT_FOUND'].includes(r.code)) resetPw = pw;
+    if (r.ok || ['BAD_REQUEST', 'TOO_LARGE', 'NOT_FOUND', 'CONFLICT'].includes(r.code)) resetPw = pw;
     else if (['AUTH_FAILED', 'LOCKED', 'SETUP'].includes(r.code)) resetPw = null;
     return r;
   };
@@ -367,10 +369,19 @@
     // last count seen in this tab: shown at once; the first poll (batched with the page's data) refreshes it
     const known = WP.cacheGet('pending', {});
     if (typeof known === 'number') setCount(known);
+    let authWarned = false;
     const poll = async () => {
       try {
-        const j = await WP.read('poll', lastId !== null ? { since: lastId } : {});
-        if (!j.ok) return;
+        // quiet: an expired session must not navigate away from a half-filled review / approval
+        const j = await WP.read('poll', lastId !== null ? { since: lastId } : {}, { quiet: true });
+        if (!j.ok) {
+          if (j.code === 'AUTH' && !authWarned) {
+            authWarned = true;
+            WP.toast('Session หมดอายุ', 'เข้าสู่ระบบใหม่ในแท็บใหม่ — ข้อมูลที่กรอกในหน้านี้ยังอยู่', null, 'fa-user-lock');
+          }
+          return;
+        }
+        authWarned = false;
         const r = j.data;
         setCount(r.pending);
         WP.cachePut('pending', {}, r.pending);

@@ -16,7 +16,7 @@
   const ins = p.inspections || {};
   const me = (WP.user && WP.user.fullname) || '';
   WP.setPage('พิจารณาใบอนุญาต ' + p.permit_no, p.status === 'pending' ? 'pending' : 'list');
-  const P = { id: p.id, types, checklist: p.checklist || {}, loto: p.loto || [], confined: p.confined || {}, editable, me };
+  const P = { id: p.id, types, checklist: p.checklist || {}, loto: p.loto || [], confined: p.confined || {}, editable, me, base: p.updated_at };
 
   const inspRows = Object.entries(D.inspectRoles).map(([rk, rl]) => `
             <tr><td class="role">${E(rl)}</td>
@@ -145,18 +145,23 @@
     const o = {};
     $$('#insp input[data-s]').forEach(i => { (o[i.dataset.r] ??= {})[i.dataset.s] = { name: i.value.trim() }; });
     $$('#insp input[data-note]').forEach(i => { (o[i.dataset.r] ??= {}).note = i.value.trim(); });
-    return { id: P.id, checklist: WP.collectChecklist($('#checklist')), loto: $('#loto') ? WP.collectLoto($('#loto')) : [], ...($('#cs-box') ? { confined: WP.collectConfined($('#cs-box')) } : {}), inspections: o };
+    return { id: P.id, base: P.base, checklist: WP.collectChecklist($('#checklist')), loto: $('#loto') ? WP.collectLoto($('#loto')) : [], ...($('#cs-box') ? { confined: WP.collectConfined($('#cs-box')) } : {}), inspections: o };
   };
-  const save = async (log = true) => { const x = await WP.api('save_review', { ...collect(), log }); if (!x.ok) throw new Error(x.msg); return x; };
+  const save = async (log = true) => {
+    const x = await WP.api('save_review', { ...collect(), log });
+    if (!x.ok) throw new Error(x.msg);
+    if (x.data && x.data.updated_at) P.base = x.data.updated_at; // our own save is not a conflict for a retried approve / close
+    return x;
+  };
 
   $$('.sign-me').forEach(b => b.onclick = () => {
     const i = $(`#insp input[data-r="${b.dataset.r}"][data-s="${b.dataset.s}"]`); i.value = P.me;
     i.closest('.insp-cell').classList.add('filled'); b.remove();
   });
-  $('#btn-save')?.addEventListener('click', async () => {
+  $('#btn-save')?.addEventListener('click', WP.busy(async () => {
     try { await save(); Swal.fire({ icon: 'success', title: 'บันทึกเรียบร้อย', timer: 1300, showConfirmButton: false }).then(() => location.reload()); }
     catch (e) { Swal.fire({ icon: 'error', title: 'บันทึกไม่สำเร็จ', text: e.message }); }
-  });
+  }));
 
   let pad;
   if ($('#sig-appr-box')) { $('#sig-appr-box').innerHTML = WP.sigHTML('sig-appr', 'ลงชื่อผู้อนุมัติ (จป.) <span class="req">*</span>'); pad = new WP.SignaturePad($('#sig-appr')); }
@@ -167,7 +172,7 @@
     return true;
   };
 
-  $('#btn-approve')?.addEventListener('click', async () => {
+  $('#btn-approve')?.addEventListener('click', WP.busy(async () => {
     if (pad.empty) return Swal.fire({ icon: 'warning', title: 'กรุณาลงลายมือชื่อผู้อนุมัติ' });
     const c = await Swal.fire({ icon: 'question', title: 'ยืนยันอนุมัติใบอนุญาต?', html: 'ผู้ขอจะสามารถเริ่มปฏิบัติงานได้ตามเวลาที่ระบุ', showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-circle-check"></i> อนุมัติ', cancelButtonText: 'ยกเลิก' });
     if (!c.isConfirmed) return;
@@ -177,17 +182,19 @@
       WP.celebrate();
       Swal.fire({ icon: 'success', title: 'อนุมัติเรียบร้อย!', html: '<i class="fa-solid fa-helmet-safety fa-3x ic-swing" style="color:var(--gold);margin:10px"></i><br>ขอให้ปฏิบัติงานอย่างปลอดภัย', timer: 2600, showConfirmButton: false }).then(() => location.reload());
     }
-  });
-  $('#btn-reject')?.addEventListener('click', async () => {
+  }));
+  $('#btn-reject')?.addEventListener('click', WP.busy(async () => {
     const x = await Swal.fire({ icon: 'warning', title: 'ไม่อนุมัติใบอนุญาต', input: 'textarea', inputValue: $('#comment').value, inputPlaceholder: 'ระบุเหตุผล / สิ่งที่ต้องแก้ไข', inputValidator: v => !v.trim() && 'กรุณาระบุเหตุผล', showCancelButton: true, confirmButtonText: 'ยืนยันไม่อนุมัติ', cancelButtonText: 'ยกเลิก' });
-    if (x.isConfirmed && await decide('reject', x.value)) location.reload();
-  });
-  $('#btn-close')?.addEventListener('click', async () => {
+    if (!x.isConfirmed) return;
+    if (await decide('reject', x.value)) location.reload();
+  }));
+  $('#btn-close')?.addEventListener('click', WP.busy(async () => {
     const x = await Swal.fire({ icon: 'question', title: 'ปิดงาน?', input: 'textarea', inputPlaceholder: 'บันทึกผลการตรวจสอบหลังเสร็จงาน (ถ้ามี)', showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-flag-checkered"></i> ปิดงาน', cancelButtonText: 'ยกเลิก' });
     if (!x.isConfirmed) return;
-    try { await save(false); } catch { }
+    // like approve: the review on screen must be saved first, otherwise do not close
+    try { await save(false); } catch (e) { return Swal.fire({ icon: 'error', title: 'บันทึกผลการตรวจสอบไม่สำเร็จ', text: e.message }); }
     if (await decide('close', x.value)) { WP.celebrate(); setTimeout(() => location.reload(), 1500); }
-  });
+  }));
   $('#btn-del').onclick = async () => {
     if (await WP.deletePermit(P.id, p.permit_no)) location.href = 'permits.html';
   };

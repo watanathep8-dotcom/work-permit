@@ -94,7 +94,7 @@
   WP.openAttachment = async params => {
     const win = window.open('', '_blank');
     if (win) win.document.write('<p style="font-family:sans-serif;padding:20px">กำลังโหลดไฟล์...</p>');
-    const r = await WP.api('file', params);
+    const r = await WP.api('file', params, { quiet: true }); // an expired session must not leave the page
     if (!r.ok) {
       if (win) win.close();
       return window.Swal ? Swal.fire({ icon: 'error', title: 'เปิดไฟล์ไม่สำเร็จ', text: r.msg }) : alert(r.msg);

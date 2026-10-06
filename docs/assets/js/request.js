@@ -10,7 +10,9 @@
   const editId = WP.editMode ? +WP.qs('edit') || 0 : 0;
   let step = 0, pads = {}, lastTypes = '';
   let initial = null; // edit mode: { checklist, loto, confined } of the permit being edited
-  let editNo = '';
+  let editNo = '', editBase = ''; // edit mode: permit no + its updated_at as loaded (a newer change by someone else is refused)
+  // One id per filled form: a retried submit (lost answer, double tap) returns the permit already created.
+  const rid = Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
   const panels = $$('.wz-panel'), stepEls = $$('.step');
 
   // ---------- Draft autosave (per-browser convenience; not in edit mode) ----------
@@ -171,6 +173,7 @@
     }
     const p = r.data.permit;
     editNo = p.permit_no;
+    editBase = p.updated_at || '';
     WP.setPage('แก้ไขข้อมูลใบอนุญาต ' + p.permit_no, 'list');
     top.className = 'alert warn mb2';
     top.innerHTML = `<i class="fa-solid fa-pen-to-square"></i><div>กำลังแก้ไขข้อมูลใบอนุญาต <b>${E(p.permit_no)}</b> ${WP.statusBadge(p.es)} — แก้ไขข้อมูลที่ผู้ขอกรอกได้ทุกขั้นตอน แล้วกด <b>บันทึกการแก้ไข</b> (ต้องใช้รหัสผ่าน Reset password)
@@ -209,7 +212,7 @@
         showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-floppy-disk"></i> บันทึก', cancelButtonText: 'ตรวจสอบอีกครั้ง'
       });
       if (!ok.isConfirmed) return;
-      const r = await WP.withResetPassword('update_permit', Object.assign({ id: editId }, data), `ยืนยันการแก้ไข ${editNo}`);
+      const r = await WP.withResetPassword('update_permit', Object.assign({ id: editId, base: editBase }, data), `ยืนยันการแก้ไข ${editNo}`);
       if (!r) return;
       if (!r.ok) return Swal.fire({ icon: 'error', title: 'บันทึกไม่สำเร็จ', text: r.msg });
       await Swal.fire({ icon: 'success', title: r.data.changed.length ? 'บันทึกการแก้ไขเรียบร้อย' : 'ไม่มีข้อมูลที่เปลี่ยนแปลง', timer: 1300, showConfirmButton: false });
@@ -240,7 +243,7 @@
         data.attachment = { name: f.name, mimeType: f.type || '', base64: String(url).slice(String(url).indexOf(',') + 1) };
       } catch { return Swal.fire({ icon: 'error', title: 'อ่านไฟล์แนบไม่สำเร็จ' }); }
     }
-    const r = await WP.api('submit', Object.assign(data, { with_permit: true }));
+    const r = await WP.api('submit', Object.assign(data, { with_permit: true, rid }));
     if (!r.ok) return Swal.fire({ icon: 'error', title: 'ส่งไม่สำเร็จ', text: r.msg });
     try { localStorage.removeItem(DKEY); } catch { }
     WP.handoff(r.data.permit_no, r.data.token, r.data.view); // status page paints it without another round-trip
