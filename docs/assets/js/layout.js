@@ -2,6 +2,8 @@
    e-Work Permit — shared header/footer (replaces inc/header.php +
    inc/footer.php). Each page puts its markup in <div id="wp-page">
    and sets <body data-layout="public|admin" data-active=".." data-title="..">.
+   Admin-layout pages are for จป. (role safety) only, unless the body has
+   data-allow="all" (view / approvals: approvers see their own permits there).
    ================================================================ */
 (() => {
   const WP = window.WP;
@@ -14,9 +16,16 @@
   const title = (editMode && body.dataset.editTitle) || body.dataset.title || '';
   const appName = (WP.data.config && WP.data.config.appName) || 'e-Work Permit';
 
+  const allowAll = (WP.allowAll = layout === 'admin' && body.dataset.allow === 'all');
   if (layout === 'admin' && !WP.session) {
     WP.halt = true; // page scripts check this and do nothing
-    location.replace(B + '/login.html');
+    location.replace(B + '/login.html?next=' + encodeURIComponent(location.pathname.replace(/^.*\/admin\//, 'admin/') + location.search));
+    return;
+  }
+  if (layout === 'admin' && !allowAll && !WP.isSafety()) {
+    // ผู้รับผิดชอบงาน / เจ้าของพื้นที่: no admin-wide pages — their own list instead
+    WP.halt = true;
+    location.replace(B + '/admin/approvals.html');
     return;
   }
 
@@ -46,20 +55,24 @@
   let main;
   if (layout === 'admin') {
     const u = WP.user || {};
+    const safety = WP.isSafety(), approver = WP.hasRole('responsible') || WP.hasRole('area_owner');
     const nav = (key, href, icon, label, extra = '') =>
       `<a href="${B}/${href}" class="${active === key ? 'active' : ''}" data-nav="${key}"><i class="fa-solid ${icon}"></i><span>${label}</span>${extra}</a>`;
+    const mine = nav('mine', 'admin/approvals.html', 'fa-inbox', 'รออนุมัติของฉัน', '<em class="nav-count zero" id="nav-mine">0</em>');
     const aside = document.createElement('aside');
     aside.className = 'sidebar'; aside.id = 'sidebar';
     aside.innerHTML = `
-  <a class="brand" href="${B}/admin/dashboard.html">
+  <a class="brand" href="${WP.homeUrl()}">
     <span class="brand-icon"><i class="fa-solid fa-shield-halved"></i></span>
-    <span class="brand-text"><b>e-Work Permit</b><small>ระบบอนุมัติ จป.</small></span>
+    <span class="brand-text"><b>e-Work Permit</b><small>${safety ? 'ระบบอนุมัติ จป.' : 'ระบบอนุมัติใบอนุญาต'}</small></span>
   </a>
   <nav class="side-nav">
+    ${safety ? `
     ${nav('dash', 'admin/dashboard.html', 'fa-gauge-high', 'แดชบอร์ด')}
     ${nav('pending', 'admin/permits.html?status=pending', 'fa-bell', 'รออนุมัติ', '<em class="nav-count" id="nav-pending">0</em>')}
+    ${approver ? mine : ''}
     ${nav('list', 'admin/permits.html', 'fa-folder-open', 'ใบอนุญาตทั้งหมด')}
-    ${nav('users', 'admin/users.html', 'fa-user-shield', 'ผู้ใช้งาน จป.')}
+    ${nav('users', 'admin/users.html', 'fa-user-shield', 'ผู้ใช้งาน')}` : mine}
     <a href="${B}/request.html" target="_blank"><i class="fa-solid fa-file-circle-plus"></i><span>หน้าขอใบอนุญาต</span></a>
   </nav>
   <div class="side-user">
@@ -75,7 +88,7 @@
     <h1 class="topbar-title">${E(title)}</h1>
     <div class="topbar-right">
       <span class="clock" id="live-clock"></span>
-      <a href="${B}/admin/permits.html?status=pending" class="bell" id="bell"><i class="fa-solid fa-bell"></i><em id="bell-count">0</em></a>
+      <a href="${B}/admin/${WP.isSafety() ? 'permits.html?status=pending' : 'approvals.html'}" class="bell" id="bell"><i class="fa-solid fa-bell"></i><em id="bell-count">0</em></a>
     </div>
   </header>
   <main class="admin-content"></main>`;
@@ -95,7 +108,7 @@
     ${pn('home', 'index.html', 'fa-house', 'หน้าแรก')}
     ${pn('request', 'request.html', 'fa-file-signature', 'ขอใบอนุญาต')}
     ${pn('track', 'track.html', 'fa-magnifying-glass-location', 'ติดตามสถานะ')}
-    <a href="${B}/${WP.session ? 'admin/dashboard.html' : 'login.html'}" class="nav-cta"><i class="fa-solid fa-user-shield"></i><span>สำหรับ จป.</span></a>
+    <a href="${WP.session ? WP.homeUrl() : B + '/login.html'}" class="nav-cta"><i class="fa-solid fa-user-shield"></i><span>${WP.session && !WP.isSafety() ? 'รออนุมัติของฉัน' : 'สำหรับ จป. / ผู้อนุมัติ'}</span></a>
   </nav>`;
     main = document.createElement('main');
     main.className = 'pub-content';
@@ -129,6 +142,7 @@
     WP.read('me').then(r => {
       if (!r.ok) return;
       WP.updateSessionUser(r.data);
+      if (!allowAll && !WP.isSafety(r.data)) { location.replace(B + '/admin/approvals.html'); return; }
       const n = document.getElementById('me-name'), p = document.getElementById('me-pos');
       if (n) n.textContent = r.data.fullname; if (p) p.textContent = r.data.position;
     });

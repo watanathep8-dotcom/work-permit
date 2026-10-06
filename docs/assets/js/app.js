@@ -359,7 +359,49 @@
     location.href = WP.base + '/login.html';
   }));
 
-  if (WP.session && $('#bell')) {
+  // ---------- approvers (ผู้รับผิดชอบงาน / เจ้าของพื้นที่): "รออนุมัติของฉัน" count + toasts ----------
+  // Non-จป. users poll action=my_tasks (their own stages only); a จป. who also holds an
+  // approver role gets the count once per page (their bell stays the จป. poll below).
+  if (WP.session && $('#bell') && !WP.isSafety()) {
+    let known = null, authWarned = false;
+    const setMine = n => {
+      ['#bell-count', '#nav-mine'].forEach(s => { const e = $(s); if (e) { e.textContent = n; e.classList.toggle('zero', !n); } });
+      $('#bell').classList.toggle('has', n > 0);
+      document.title = (n ? `(${n}) ` : '') + document.title.replace(/^\(\d+\)\s/, '');
+    };
+    const last = WP.cacheGet('mine', {});
+    if (typeof last === 'number') setMine(last);
+    const pollMine = async () => {
+      try {
+        const j = await WP.read('my_tasks', {}, { quiet: true });
+        if (!j.ok) {
+          if (j.code === 'AUTH' && !authWarned) { authWarned = true; WP.toast('Session หมดอายุ', 'เข้าสู่ระบบใหม่ในแท็บใหม่ — ข้อมูลที่กรอกในหน้านี้ยังอยู่', null, 'fa-user-lock'); }
+          return;
+        }
+        authWarned = false;
+        const ids = j.data.pending.map(p => p.id);
+        setMine(j.data.count);
+        WP.cachePut('mine', {}, j.data.count);
+        if (known) {
+          const fresh = j.data.pending.filter(p => !known.has(p.id));
+          if (fresh.length) {
+            WP.chime();
+            fresh.forEach(p => WP.toast('รออนุมัติ: ' + p.permit_no, `${(WP.data.stages[p.stage] || {}).label || ''} · ${p.location}`, `${WP.base}/admin/view.html?id=${p.id}`, 'fa-inbox'));
+            document.dispatchEvent(new CustomEvent('wp:mine', { detail: fresh }));
+          }
+        }
+        known = new Set(ids);
+      } catch { }
+    };
+    pollMine(); setInterval(pollMine, 15000);
+  } else if (WP.session && $('#nav-mine')) {
+    WP.read('my_tasks', {}, { quiet: true }).then(j => {
+      const e = $('#nav-mine'); if (!j.ok || !e) return;
+      e.textContent = j.data.count; e.classList.toggle('zero', !j.data.count);
+    });
+  }
+
+  if (WP.session && $('#bell') && WP.isSafety()) {
     let lastId = null;
     const setCount = n => {
       ['#bell-count', '#nav-pending'].forEach(s => { const e = $(s); if (e) { e.textContent = n; e.classList.toggle('zero', !n); } });

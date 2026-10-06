@@ -22,13 +22,20 @@
     return `<span class="badge ${s.cls}"><i class="fa-solid ${s.icon}"></i> ${s.label}</span>`;
   };
 
+  /** Pending permits in the approval workflow: which stage (0–3) they wait at. */
+  WP.stageBadge = p => {
+    const st = p && p.status === 'pending' && D.stages && D.stages[p.stage];
+    if (!st) return '';
+    return `<span class="badge st-stage"><i class="fa-solid ${st.icon}"></i> ขั้นที่ ${st.no}: ${E(st.label)}</span>`;
+  };
+
   WP.wtTags = types => (types || []).map(t => {
     const w = D.workTypes[t]; if (!w) return '';
     return `<span class="wt-tag" style="--wc:${w.color}"><i class="fa-solid ${w.icon}"></i> ${E(w.short)}</span>`;
   }).join('');
 
-  /** render_info_card() */
-  WP.infoCardHTML = p => {
+  /** render_info_card(). opts.staff: also the assigned approvers (logged-in pages only). */
+  WP.infoCardHTML = (p, opts = {}) => {
     let h = `<div class="card mb2 reveal">
     <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-file-lines ic-bob"></i></span><h3>ข้อมูลใบขออนุญาต</h3></div>
     <div class="card-b">
@@ -40,7 +47,9 @@
         <dt>ผู้ขออนุญาต</dt><dd>${E((p.requester_title + ' ' + p.requester_name).trim())} <span class="muted">· <i class="fa-solid fa-phone"></i> ${E(p.requester_phone)}</span></dd>
         <dt>บริษัท / หน่วยงาน</dt><dd>${E(p.requester_company)}</dd>
         <dt>จำนวนพนักงาน</dt><dd>${+p.worker_count || 0} คน</dd>
-        <dt>ผู้รับผิดชอบงานโครงการ</dt><dd>${E(p.owner_name)}${p.owner_phone ? ` <span class="muted">· <i class="fa-solid fa-phone"></i> ${E(p.owner_phone)}</span>` : ''}</dd>
+        <dt>ผู้รับผิดชอบงานโครงการ</dt><dd>${E(p.owner_name)}${p.owner_phone ? ` <span class="muted">· <i class="fa-solid fa-phone"></i> ${E(p.owner_phone)}</span>` : ''}</dd>${opts.staff && p.workflow ? `
+        <dt>ผู้รับผิดชอบงาน (ผู้อนุมัติ)</dt><dd><i class="fa-solid fa-user-tie"></i> ${E(p.responsible_name || '-')}</dd>
+        <dt>เจ้าของพื้นที่ (ผู้อนุมัติ)</dt><dd><i class="fa-solid fa-map-location-dot"></i> ${p.area_owner_name ? E(p.area_owner_name) : '<span class="muted">— ยังไม่ระบุ —</span>'}</dd>` : ''}
         <dt>สถานที่ปฏิบัติงาน</dt><dd><i class="fa-solid fa-location-dot" style="color:var(--red)"></i> ${E(p.location)}</dd>
         <dt>รายละเอียดงาน</dt><dd style="white-space:pre-line">${E(p.job_detail)}</dd>`;
     if (p.has_attachment) h += `
@@ -63,15 +72,44 @@
 
   /** render_timeline() */
   WP.timelineHTML = logs => {
-    const map = { submit: ['ยื่นใบขออนุญาต', ''], approve: ['จป. อนุมัติ', ''], reject: ['ไม่อนุมัติ', 'reject'], close: ['ปิดงาน', 'close'], review: ['บันทึกการตรวจสอบ', ''], edit: ['จป. แก้ไขข้อมูล', ''] };
+    const map = {
+      submit: ['ยื่นใบขออนุญาต', ''], approve: ['จป. อนุมัติ', ''], reject: ['ไม่อนุมัติ', 'reject'], close: ['ปิดงาน', 'close'], review: ['บันทึกการตรวจสอบ', ''], edit: ['จป. แก้ไขข้อมูล', ''],
+      assign_area: ['ผู้รับผิดชอบงานระบุเจ้าของพื้นที่', ''], area_approve: ['เจ้าของพื้นที่อนุมัติ', ''], resp_approve: ['ผู้รับผิดชอบงานอนุมัติ', ''], reassign: ['จป. มอบหมายผู้อนุมัติใหม่', '']
+    };
     return '<div class="timeline">' + (logs || []).map((l, i) => {
       const [t, c] = map[l.action] || [l.action, ''];
       return `<div class="tl-item ${c}" style="animation-delay:${i * 100}ms"><b>${E(t)}</b><small>${WP.thaiDate(l.created_at, true)} · ${E(l.by_name)}</small>${l.note ? '<p>' + WP.nl2br(l.note) + '</p>' : ''}</div>`;
     }).join('') + '</div>';
   };
 
+  /**
+   * Approval workflow progress (permits with a responsible): every stage with its
+   * time. Shows stage names and timestamps only — no names, no signatures.
+   */
+  WP.workflowStepsHTML = p => {
+    const st = p.status, stg = D.stages || {};
+    const rejectAt = st === 'rejected' ? ({ assign: 1, area: 2, resp: 3, safety: 4 }[p.reject_stage] || 4) : -1;
+    const curAt = st === 'pending' ? (stg[p.stage] ? stg[p.stage].no + 1 : 4) : (st === 'approved' ? 4 : -1);
+    const steps = [
+      ['fa-paper-plane', 'ยื่นคำขอ', p.created_at],
+      [stg.assign.icon, stg.assign.short, p.area_assigned_at],
+      [stg.area.icon, stg.area.short, p.area_approved_at],
+      [stg.resp.icon, stg.resp.short, p.resp_approved_at],
+      [stg.safety.icon, st === 'approved' || st === 'closed' ? 'จป. อนุมัติ / ปฏิบัติงาน' : stg.safety.short, ['approved', 'closed'].includes(st) ? p.approved_at : ''],
+      ['fa-flag-checkered', 'ปิดงาน', p.closed_at]
+    ];
+    let h = '<div class="track-steps wf">' + steps.map(([ic, lbl, at], i) => {
+      const bad = i === rejectAt, on = !!at || bad, cur = i === curAt;
+      const when = bad ? WP.thaiDate(p.approved_at, true) : (at ? WP.thaiDate(at, true) : (cur && st === 'pending' ? 'กำลังรอ' : ''));
+      return `<div class="ts ${on ? 'on ' : ''}${cur ? 'cur ' : ''}${bad ? 'bad' : ''}"><div class="ts-ic"><i class="fa-solid ${bad ? 'fa-xmark' : ic}"></i></div><span>${E(bad ? 'ไม่อนุมัติ' : lbl)}</span>${when ? `<small class="ts-at">${E(when)}</small>` : ''}</div>`;
+    }).join('') + '</div>';
+    if (p.es === 'expired') h += `<div class="alert warn mt1"><i class="fa-solid fa-clock"></i><div>ใบอนุญาตนี้ <b>หมดอายุแล้ว</b> (เกินเวลาที่ระบุ / เกิน ${D.config.permitValidHours} ชม.) หากงานยังไม่เสร็จต้องขออนุญาตใหม่</div></div>`;
+    return h;
+  };
+
   /** render_track_steps() — uses the server-computed effective status (es) */
   WP.trackStepsHTML = p => {
+    if (p.workflow && D.stages) return WP.workflowStepsHTML(p);
     const st = p.status;
     const s = [
       ['fa-paper-plane', 'ยื่นคำขอ', true, false],

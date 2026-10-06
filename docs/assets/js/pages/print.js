@@ -85,7 +85,16 @@
       }).join('')}
       <td class="small val">${E((ins[rk] || {}).note || '')}</td></tr>`).join('')}
   </table>
-  ${p.approve_comment ? `<table><tr><td class="small"><b>ความเห็น จป.:</b> <span class="val">${WP.nl2br(p.approve_comment)}</span></td></tr></table>` : ''}
+  ${p.approve_comment ? `<table><tr><td class="small"><b>${p.status === 'rejected' ? 'เหตุผลที่ไม่อนุมัติ' : 'ความเห็น จป.'}:</b> <span class="val">${WP.nl2br(p.approve_comment)}</span></td></tr></table>` : ''}
+  ${p.workflow ? (() => {
+    const done = ['approved', 'closed'].includes(p.status);
+    const cell = (lbl, name, at, img, c) => `<td class="center small" style="width:33.3%">${sigImg(img) || '<div style="height:42px"></div>'}ลงชื่อ ........................................ ${E(lbl)}<br>( <span class="val">${E(name || '')}</span> )<br>${at ? td(at, true) : 'วันที่ ............................'}${c ? `<br><span class="val">${E(c)}</span>` : ''}</td>`;
+    return `<table><tr><td colspan="3" class="sub">การอนุมัติตามลำดับ (e-Work Permit)</td></tr><tr>
+      ${cell('เจ้าของพื้นที่ (ขั้นที่ 1)', p.area_owner_name, p.area_approved_at, sg.area, p.area_comment)}
+      ${cell('ผู้รับผิดชอบงาน (ขั้นที่ 2)', p.responsible_name, p.resp_approved_at, sg.resp, p.resp_comment)}
+      ${cell('จป. (ขั้นที่ 3)', done ? p.approver_name : '', done ? p.approved_at : '', done ? sg.approver : '', '')}
+    </tr></table>`;
+  })() : ''}
 
   <table class="small"><tr><td style="width:9%"><b>หมายเหตุ</b></td><td>${ol(D.remarks)}</td></tr></table>
   <div class="small" style="text-align:right;margin-top:4px">${E(D.config.formCode)}</div>
@@ -104,8 +113,8 @@
           ลงชื่อ ............................................ ผู้ขออนุญาต (ผู้รับเหมา)<br>( <span class="val">${E((p.requester_title + ' ' + p.requester_name).trim())}</span> )
         </div>
         <div class="center" style="margin-top:18px">
-          ${sigImg(sg.owner)}
-          ลงชื่อ ............................................ ผู้รับผิดชอบงานโครงการ<br>( <span class="val">${E(p.owner_name)}</span> )
+          ${sigImg(sg.owner || (p.workflow ? sg.resp : ''))}
+          ลงชื่อ ............................................ ผู้รับผิดชอบงานโครงการ<br>( <span class="val">${E(!sg.owner && p.workflow && sg.resp ? p.responsible_name : p.owner_name)}</span> )
         </div>
       </td></tr>
   </table>

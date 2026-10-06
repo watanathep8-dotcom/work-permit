@@ -6,7 +6,8 @@
  *   GET /__api-log[?reset=1]                  → API calls made so far (to count round-trips per page view)
  *
  * With the mock API, config.js is rewritten on the fly to point at /api and the
- * backend is set up with the test-only admin + reset passwords below (in-memory, lost on exit).
+ * backend is set up with the test-only admin + reset passwords below (in-memory, lost on exit),
+ * plus approvers "resp" (ผู้รับผิดชอบงาน) and "area" (เจ้าของพื้นที่) with DEV_APPROVER_PASSWORD.
  */
 'use strict';
 const http = require('http');
@@ -16,6 +17,7 @@ const { createGas } = require('./gas-mock');
 
 const DEV_ADMIN_PASSWORD = 'dev-admin-pass'; // test fixture for the in-memory mock only
 const DEV_RESET_PASSWORD = 'dev-reset-pass'; // test fixture (Script Property WP_RESET_PASSWORD) for the mock only
+const DEV_APPROVER_PASSWORD = 'dev-approver-pass'; // test fixture: users resp / area of the mock only
 const port = Number(process.argv[2]) || 8765;
 const noApi = process.argv.includes('--no-api');
 const latencyArg = process.argv.find((a) => a.startsWith('--latency='));
@@ -31,6 +33,12 @@ if (!noApi) {
   gas.context.setupSystem();
   delete gas.propStore.WP_INITIAL_ADMIN_PASSWORD;
   gas.propStore.WP_RESET_PASSWORD = DEV_RESET_PASSWORD; // enables reset / edit / delete in the preview
+  // approval workflow fixtures (in-memory only): ผู้รับผิดชอบงาน "resp" + เจ้าของพื้นที่ "area"
+  const call = (o) => JSON.parse(gas.context.doPost({ postData: { contents: JSON.stringify(o) } }).getContent());
+  const s = call({ action: 'login', username: 'admin', password: DEV_ADMIN_PASSWORD }).data.session;
+  call({ action: 'user_save', session: s, username: 'resp', fullname: 'สมศักดิ์ ผู้รับผิดชอบงาน', roles: ['responsible'], email: 'resp@example.com', password: DEV_APPROVER_PASSWORD });
+  call({ action: 'user_save', session: s, username: 'area', fullname: 'อารี เจ้าของพื้นที่', roles: ['area_owner'], email: 'area@example.com', password: DEV_APPROVER_PASSWORD });
+  call({ action: 'logout', session: s });
 }
 
 // Request log for measuring round-trips per page view: GET /__api-log (?reset=1 clears it).

@@ -236,5 +236,61 @@ module.exports = async function run() {
   check('hand-over: ignored after 60 s', W.takeHandoff(r.data.permit_no, r.data.token) === null);
   await tick();
 
+  // ---- roles (approval workflow) in the browser
+  {
+    const X = ctx.WP;
+    X.layout = undefined; X.allowAll = false; ctx.location.href = '';
+    const adm = (await X.api('login', { username: 'admin', password: 'Front-End-Test-1' })).data;
+    X.saveSession(adm.session, adm.user);
+    check('roles: admin is safety → dashboard', X.isSafety() && X.homeUrl() === X.base + '/admin/dashboard.html' && X.roles().join() === 'safety');
+    X.saveSession(adm.session, { id: 1, username: 'admin', fullname: 'x' }); // stored before roles existed
+    check('roles: a session stored before roles existed counts as จป.', X.isSafety() && X.homeUrl().endsWith('/admin/dashboard.html'));
+    X.saveSession(adm.session, adm.user);
+    const mk = async (u, roles) => (await X.api('user_save', { username: u, fullname: 'ผู้ใช้ ' + u, roles, email: u + '@corp.co.th', password: 'pw-' + u })).data.id;
+    const rid = await mk('fresp', ['responsible']), aid = await mk('farea', ['area_owner']);
+    const pub = await X.get('responsibles');
+    check('public responsibles (GET): id + name only', pub.ok && pub.data.length === 1 && pub.data[0].id === rid && !JSON.stringify(pub.data).includes('@'), pub);
+    const sub = await X.api('submit', {
+      company: X.data.companies[0], permit_type: 'contractor', work_types: ['general'], work_date: '2026-10-05', time_from: '08:00', time_to: '17:00',
+      requester_name: 'ผู้ขอ wf', requester_company: 'x', requester_phone: '0812345678', owner_name: '', location: 'ห้อง wf', job_detail: 'j', requester_sign: PNG, responsible_id: rid
+    });
+    check('submit with responsible from the browser', sub.ok, sub);
+    const rl = (await X.api('login', { username: 'fresp', password: 'pw-fresp' })).data;
+    X.saveSession(rl.session, rl.user);
+    check('roles: responsible → approvals page', !X.isSafety() && X.hasRole('responsible') && X.homeUrl() === X.base + '/admin/approvals.html');
+    const singlesA = [await X.api('me'), await X.api('my_tasks'), await X.api('approvers'), await X.api('permit', { id: sub.data.id, signs: true })];
+    calls.length = 0;
+    const batchedA = await Promise.all([X.read('me'), X.read('my_tasks'), X.read('approvers'), X.read('permit', { id: sub.data.id, signs: true })]);
+    check('approver page load: me + my_tasks + approvers + permit in ONE batch', calls.length === 1 && calls[0] === 'batch[me,my_tasks,approvers,permit]' && batchedA.every((x, i) => same(x, singlesA[i])), { calls, batchedA });
+    check('approver: my_tasks lists the permit at stage assign', batchedA[1].data.count === 1 && batchedA[1].data.pending[0].stage === 'assign');
+    // FORBIDDEN: a จป.-only page read leaves for the approver's own list; a write / background read / allowed page does not
+    X.layout = 'admin'; ctx.location.href = '';
+    r = await X.read('dashboard');
+    check('FORBIDDEN page-load read on a จป. page → approvals', r.code === 'FORBIDDEN' && /\/admin\/approvals\.html$/.test(ctx.location.href) && X.session === rl.session, { r, href: ctx.location.href });
+    ctx.location.href = '';
+    r = await X.api('decide', { id: sub.data.id, decision: 'reject', comment: 'x' });
+    check('FORBIDDEN write: page kept, session kept', r.code === 'FORBIDDEN' && ctx.location.href === '' && X.session === rl.session);
+    X.allowAll = true;
+    r = await X.read('poll', {});
+    check('FORBIDDEN on an allowed page (view / approvals): no redirect', r.code === 'FORBIDDEN' && ctx.location.href === '');
+    X.allowAll = false; X.layout = undefined;
+    r = await X.api('assign_area', { id: sub.data.id, area_owner_id: aid });
+    check('write action wipes the browser cache + works', r.ok && r.data.stage === 'area' && !ss.keys().some((k) => k.startsWith('wp_swr:')), r);
+
+    // progress rendering (parts.js): stage names + times only
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'docs/assets/js/parts.js'), 'utf8'), ctx);
+    const view = (await X.api('permit', { id: sub.data.id })).data.permit;
+    let h = X.trackStepsHTML(view);
+    const steps = h.match(/<div class="ts [^"]*"/g) || [];
+    check('progress: 6 workflow steps, 0–1 done, 2 (เจ้าของพื้นที่) current', steps.length === 6 && /\bon\b/.test(steps[0]) && /\bon\b/.test(steps[1]) && /\bcur\b/.test(steps[2]) && !/\bon\b/.test(steps[3]), steps);
+    check('progress: shows the stage times, never approver names', h.includes(X.thaiDate(view.area_assigned_at, true)) && !h.includes('ผู้ใช้ fresp') && !h.includes('ผู้ใช้ farea') && !h.includes('@'), h);
+    h = X.trackStepsHTML(Object.assign({}, view, { status: 'rejected', reject_stage: 'area', stage: '', approved_at: '2026-10-05 10:00:00' }));
+    const st2 = h.match(/<div class="ts [^"]*"/g);
+    check('progress: rejected at stage 1 → that step is "ไม่อนุมัติ"', /\bbad\b/.test(st2[2]) && h.includes('ไม่อนุมัติ') && !/\bbad\b/.test(st2[4]), st2);
+    check('progress: legacy permit keeps the old 4 steps', (X.trackStepsHTML({ status: 'pending', es: 'pending', workflow: false }).match(/<div class="ts /g) || []).length === 4);
+    check('stage badge only while pending in the workflow', X.stageBadge(view).includes('ขั้นที่ 1') && X.stageBadge(Object.assign({}, view, { status: 'approved' })) === '');
+    X.clearSession();
+  }
+
   return { passed, failures };
 };

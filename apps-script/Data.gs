@@ -857,6 +857,41 @@ var WP_DATA = {
     "cancel": "ยกเลิกใบอนุญาตเนื่องจาก",
     "unsafe": "สภาพทำงานไม่ปลอดภัย"
   },
+  "roles": {
+    "safety": "จป. (เจ้าหน้าที่ความปลอดภัย)",
+    "responsible": "ผู้รับผิดชอบงาน",
+    "area_owner": "เจ้าของพื้นที่"
+  },
+  "stages": {
+    "assign": {
+      "no": 0,
+      "label": "รอระบุเจ้าของพื้นที่",
+      "short": "ระบุเจ้าของพื้นที่",
+      "role": "responsible",
+      "icon": "fa-user-tag"
+    },
+    "area": {
+      "no": 1,
+      "label": "รอเจ้าของพื้นที่อนุมัติ",
+      "short": "เจ้าของพื้นที่อนุมัติ",
+      "role": "area_owner",
+      "icon": "fa-map-location-dot"
+    },
+    "resp": {
+      "no": 2,
+      "label": "รอผู้รับผิดชอบงานอนุมัติ",
+      "short": "ผู้รับผิดชอบงานอนุมัติ",
+      "role": "responsible",
+      "icon": "fa-user-tie"
+    },
+    "safety": {
+      "no": 3,
+      "label": "รอ จป. อนุมัติ",
+      "short": "จป. อนุมัติ",
+      "role": "safety",
+      "icon": "fa-user-shield"
+    }
+  },
   "inspectRoles": {
     "owner": "1. เจ้าของพื้นที่โครงการ",
     "contractor": "2. ผู้รับผิดชอบงาน (ผู้รับเหมา)",

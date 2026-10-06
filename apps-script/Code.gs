@@ -7,9 +7,11 @@
  *
  * Files (all share one global scope in Apps Script):
  *   Code.gs     — router (doGet/doPost), response helpers, sheet "DB" helpers, utilities
- *   Auth.gs     — password hashing, login/logout/sessions (CacheService), user management
- *   Permits.gs  — permit actions (submit, track, list, view, review, decide, edit, delete, reset, files) + Teams notifications
- *   Setup.gs    — setupSystem() (run once from the editor), keepWarm() + its 10-min trigger, testTeamsNotification()
+ *   Auth.gs     — password hashing, login/logout/sessions (CacheService), users + roles (safety / responsible / area_owner)
+ *   Permits.gs  — permit actions (submit, track, list, view, approval workflow, review, decide, edit, delete, reset, files)
+ *                 + Teams notifications (@mentions) + approval reminders
+ *   Setup.gs    — setupSystem() (run once / after an upgrade), keepWarm() + its 10-min trigger,
+ *                 approval-reminder trigger (every 5 min), testTeamsNotification()
  *   Data.gs     — reference data (companies, checklists, rules) — single source of truth
  *
  * Transport (same as our SDS project):
@@ -35,13 +37,19 @@ var WP_PROP_SITE_URL = 'WP_SITE_URL'; // optional: public GitHub Pages URL, used
 var WP_CELL_MAX = 49000;              // Google Sheets cell limit is 50,000 characters
 
 var WP_SCHEMA = {
-  users: ['id', 'username', 'salt', 'password_hash', 'iterations', 'fullname', 'position', 'active', 'must_change', 'created_at'],
+  users: ['id', 'username', 'salt', 'password_hash', 'iterations', 'fullname', 'position', 'active', 'must_change', 'created_at',
+    'roles', 'email'],
   permits: ['id', 'permit_no', 'token', 'company', 'permit_type', 'work_types', 'work_date', 'time_from', 'time_to',
     'requester_title', 'requester_name', 'requester_company', 'requester_phone', 'worker_count', 'workers',
     'owner_name', 'owner_phone', 'job_detail', 'location', 'checklist', 'loto', 'confined', 'inspections',
     'requester_sign_file', 'owner_sign_file', 'attachment_file', 'attachment_name', 'attachment_mime',
     'status', 'approver_id', 'approver_name', 'approver_sign_file', 'approve_comment', 'approved_at', 'closed_at',
-    'created_at', 'updated_at'],
+    'created_at', 'updated_at',
+    // approval workflow (stage 0 assign → 1 area owner → 2 responsible → 3 จป.); see Permits.gs
+    'responsible_id', 'responsible_name', 'area_owner_id', 'area_owner_name', 'stage', 'stage_started_at',
+    'area_assigned_at', 'area_approved_at', 'area_sign_file', 'area_comment',
+    'resp_approved_at', 'resp_sign_file', 'resp_comment', 'reject_stage',
+    'last_reminder_at', 'reminder_count'],
   permit_logs: ['id', 'permit_id', 'action', 'by_name', 'note', 'created_at']
 };
 
@@ -86,11 +94,18 @@ function routes_() {
     track: apiTrack_,
     login: apiLogin_,
     logout: apiLogout_,
-    // admin OR permit-token holder
+    responsibles: apiResponsibles_,  // active "ผู้รับผิดชอบงาน": id + name only
+    // logged-in user (any role) for permits they may see, OR permit-token holder
     permit: apiPermit_,
     file: apiFile_,
-    // admin only
+    // any logged-in user (approvers: responsible / area_owner; their own stage only)
     me: apiMe_,
+    my_tasks: apiMyTasks_,
+    approvers: apiApprovers_,
+    assign_area: apiAssignArea_,
+    stage_decide: apiStageDecide_,
+    // จป. (role safety) only
+    reassign: apiReassign_,
     poll: apiPoll_,
     dashboard: apiDashboard_,
     permits: apiPermits_,
@@ -106,7 +121,7 @@ function routes_() {
     batch: apiBatch_
   };
 }
-var WP_GET_ACTIONS = { ping: true, config: true, stats: true };
+var WP_GET_ACTIONS = { ping: true, config: true, stats: true, responsibles: true };
 
 function handle_(action, params, method) {
   try {
@@ -137,7 +152,10 @@ function apiConfig_() {
  * and goes through exactly the same action function (= same auth checks and
  * output) as a single call. Errors are reported per sub-call.
  */
-var WP_BATCH_ACTIONS = { me: true, poll: true, dashboard: true, permits: true, users: true, permit: true, stats: true };
+var WP_BATCH_ACTIONS = {
+  me: true, poll: true, dashboard: true, permits: true, users: true, permit: true, stats: true,
+  my_tasks: true, approvers: true, responsibles: true
+};
 var WP_BATCH_MAX = 8;
 function apiBatch_(p, ctx) {
   var calls = Array.isArray(p.calls) ? p.calls : [];
@@ -183,6 +201,19 @@ function dataVersion_(ctx) {
   if (!v) { v = randomHex_(16); cache.put(WP_DV_KEY, v, 21600); }
   if (ctx) ctx.dv = v;
   return v;
+}
+
+/**
+ * Write mark: a second random token, replaced by writes that must NOT invalidate
+ * the read cache (approval-reminder bookkeeping: last_reminder_at / reminder_count
+ * are never part of a cached read). relockCtx_ compares it too, so a writer that
+ * read the sheets before such a write re-reads them under the lock and never
+ * writes an old copy of the row back.
+ */
+var WP_WV_KEY = 'wpwv';
+function writeMark_() { try { return String(cache_().get(WP_WV_KEY) || ''); } catch (e) { return ''; } }
+function bumpWriteMark_() {
+  try { cache_().put(WP_WV_KEY, randomHex_(16), 21600); } catch (e) { bumpDataVersion_(); } // could not mark: fall back to a full bump
 }
 
 function bumpDataVersion_() {
@@ -279,7 +310,7 @@ function withLock_(fn) {
  * are read again. The session is always re-checked (ctx.user cleared).
  */
 function relockCtx_(ctx) {
-  if (!ctx.dv0 || ctx.dv0 !== cache_().get(WP_DV_KEY)) ctx.tables = {};
+  if (!ctx.dv0 || ctx.dv0 !== cache_().get(WP_DV_KEY) || ctx.wv0 !== writeMark_()) ctx.tables = {};
   ctx.dv = null;
   ctx.user = null;
 }
@@ -306,7 +337,7 @@ function folder_() {
 function table_(ctx, name) {
   if (ctx.tables[name]) return ctx.tables[name];
   // data version as of this request's first sheet read (see relockCtx_)
-  if (!ctx.dv0) ctx.dv0 = dataVersion_(ctx);
+  if (!ctx.dv0) { ctx.dv0 = dataVersion_(ctx); ctx.wv0 = writeMark_(); }
   if (!ctx.ss) ctx.ss = spreadsheet_();
   var sheet = ctx.ss.getSheetByName(name);
   if (!sheet) fail_('ไม่พบชีต "' + name + '" กรุณารัน setupSystem() อีกครั้ง', 'SETUP');
@@ -415,6 +446,12 @@ function now_() { return new Date(); } // single clock source (tests override it
 function nowTs_() { return Math.floor(now_().getTime() / 1000); }
 function nowStr_() { return Utilities.formatDate(now_(), WP_TZ, 'yyyy-MM-dd HH:mm:ss'); }
 function todayStr_() { return Utilities.formatDate(now_(), WP_TZ, 'yyyy-MM-dd'); }
+/** Unix seconds of a nowStr_() stamp ("YYYY-MM-DD HH:MM[:SS]", Bangkok wall time); 0 if not a stamp. */
+function stampTs_(s) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(String(s || ''));
+  if (!m) return 0;
+  return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +(m[6] || 0)) / 1000 - 7 * 3600;
+}
 
 /** mb_substr(trim((string)$v), 0, $max) */
 function str_(v, max) {

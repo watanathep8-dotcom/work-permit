@@ -77,6 +77,14 @@
   WP.user = S ? S.user : null;
   WP.admin = !!S;
 
+  // ---------- roles (safety = จป., responsible = ผู้รับผิดชอบงาน, area_owner = เจ้าของพื้นที่) ----------
+  // A session stored before roles existed has no `roles`: those users were all จป.
+  WP.roles = (u = WP.user) => (u && Array.isArray(u.roles) ? u.roles : (u ? ['safety'] : []));
+  WP.hasRole = (role, u) => WP.roles(u).includes(role);
+  WP.isSafety = u => WP.hasRole('safety', u);
+  // Where a logged-in user starts: จป. → dashboard, approvers → "รออนุมัติของฉัน".
+  WP.homeUrl = u => WP.base + (WP.isSafety(u) ? '/admin/dashboard.html' : '/admin/approvals.html');
+
   // ---------- API ----------
   const noApi = () => ({ ok: false, code: 'NO_API', error: 'ยังไม่ได้ตั้งค่า apiUrl ใน docs/config.js', msg: 'ยังไม่ได้ตั้งค่า apiUrl ใน docs/config.js' });
   WP.AUTH_KEEP_MSG = ' — ข้อมูลที่กรอกยังอยู่ในหน้านี้: เปิดหน้าเข้าสู่ระบบในแท็บใหม่ แล้วกลับมากดอีกครั้ง';
@@ -94,10 +102,12 @@
       if (opts.write || opts.quiet) j.msg += WP.AUTH_KEEP_MSG;
       else if (WP.layout === 'admin' || WP.requireAdmin) location.href = WP.base + '/login.html?expired=1';
     }
+    // a จป.-only page read by a user without the จป. role (e.g. the role was removed): go to their own list
+    if (!j.ok && j.code === 'FORBIDDEN' && !opts.write && !opts.quiet && WP.layout === 'admin' && !WP.allowAll) location.href = WP.base + '/admin/approvals.html';
     return j;
   };
   // Actions that change nothing; any other action (a write) wipes the browser read cache.
-  const READS = new Set(['me', 'poll', 'dashboard', 'permits', 'users', 'permit', 'stats', 'file', 'track', 'ping', 'config', 'batch']);
+  const READS = new Set(['me', 'poll', 'dashboard', 'permits', 'users', 'permit', 'stats', 'file', 'track', 'ping', 'config', 'batch', 'my_tasks', 'approvers', 'responsibles']);
   // Writes and anything carrying a secret: POST, text/plain JSON body (no CORS preflight).
   let writes = 0;
   WP.api = async (action, data = {}, opts = {}) => {
@@ -131,7 +141,7 @@
   // Read actions requested while the page starts (layout: me, app: poll, page: its
   // data) go to the server as ONE action=batch round-trip at DOMContentLoaded.
   // A backend without "batch" (older deployment) answers NOT_FOUND → single calls.
-  const BATCHABLE = new Set(['me', 'poll', 'dashboard', 'permits', 'users', 'permit', 'stats']);
+  const BATCHABLE = new Set(['me', 'poll', 'dashboard', 'permits', 'users', 'permit', 'stats', 'my_tasks', 'approvers']);
   const NB = 'wp_nobatch';
   let noBatch = false;
   try { noBatch = sessionStorage.getItem(NB) === WP.apiUrl; } catch { }

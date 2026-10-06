@@ -53,7 +53,7 @@
       ${!d.pending.length ? '<div class="empty"><i class="fa-solid fa-mug-hot"></i>ไม่มีคำขอค้างพิจารณา</div>' : `
       <div class="tbl-wrap" style="border:0;border-radius:0"><table class="tbl"><thead><tr><th>เลขที่</th><th>ผู้ขอ</th><th>ลักษณะงาน</th><th>วันที่ทำงาน</th><th></th></tr></thead><tbody>
       ${d.pending.map(p => `
-        <tr><td class="p-no">${E(p.permit_no)}</td><td>${E(p.requester_name)}<br><small class="muted">${E(p.requester_company)}</small></td><td>${WP.wtTags(p.work_types)}</td>
+        <tr><td class="p-no">${E(p.permit_no)}${p.stage && p.stage !== 'safety' ? '<br>' + WP.stageBadge(Object.assign({ status: 'pending' }, p)) : ''}</td><td>${E(p.requester_name)}<br><small class="muted">${E(p.requester_company)}</small></td><td>${WP.wtTags(p.work_types)}</td>
           <td class="nowrap">${WP.thaiDate(p.work_date)}<br><small class="muted">${WP.hm(p.time_from)}–${WP.hm(p.time_to)}</small></td>
           <td><a class="btn sm" href="view.html?id=${p.id}"><i class="fa-solid fa-magnifying-glass"></i> ตรวจ</a></td></tr>`).join('')}
       </tbody></table></div>`}

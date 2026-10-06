@@ -7,6 +7,9 @@
  * Before the FIRST run set Script Property WP_INITIAL_ADMIN_PASSWORD
  * (Project Settings > Script properties). It becomes the password of user
  * `admin`; change it right after the first login, then delete the property.
+ *
+ * Upgrades: run it again after pasting a new version (BEFORE deploying it) — it
+ * adds the new columns and migrates users without roles to role `safety` (จป.).
  */
 function setupSystem() {
   var props = props_();
@@ -81,6 +84,14 @@ function setupSystem() {
 
     props.setProperties({ WP_SPREADSHEET_ID: ss.getId(), WP_FOLDER_ID: folder.getId() }, false);
 
+    // Roles migration: users from before roles existed were all จป. → role safety.
+    var migrated = 0;
+    var mctx = { tables: {}, ss: ss };
+    var ut = table_(mctx, 'users');
+    ut.rows.forEach(function (u) {
+      if (String(u.roles || '').trim() === '') { u.roles = 'safety'; writeRow_(ut, u); migrated++; }
+    });
+
     var adminCreated = false;
     if (needAdmin) {
       var ctx = { tables: {}, ss: ss };
@@ -91,6 +102,8 @@ function setupSystem() {
         pf.username = 'admin';
         pf.fullname = 'ผู้ดูแลระบบ จป.';
         pf.position = WP_DATA.config.defaultPosition;
+        pf.roles = 'safety';
+        pf.email = '';
         pf.active = '1';
         pf.must_change = '1';
         pf.created_at = nowStr_();
@@ -105,6 +118,7 @@ function setupSystem() {
       spreadsheetUrl: ss.getUrl(),
       folderUrl: folder.getUrl(),
       adminCreated: adminCreated,
+      usersMigratedToSafety: migrated,
       note: adminCreated
         ? 'สร้างผู้ใช้ admin แล้ว — เข้าสู่ระบบแล้วเปลี่ยนรหัสผ่านทันที และลบ Script Property ' + WP_PROP_INITIAL_ADMIN_PASSWORD
         : 'ระบบพร้อมใช้งาน (ไม่ได้สร้างผู้ใช้ใหม่)'
@@ -203,6 +217,33 @@ function resetAdminPassword() {
   } finally {
     lock.releaseLock();
   }
+}
+
+// ---------------------------------------------------------------- approval reminders (Teams)
+/**
+ * Installs ONE time-driven trigger that runs checkApprovalReminders() every 5
+ * minutes (Permits.gs): a stage waiting > 30 min gets a Teams reminder card
+ * @mentioning its approver, again every 30 min, at most 6 per stage. Separate
+ * from keepWarm (still every 10 min). Run once from the editor; idempotent.
+ */
+var WP_REMINDER_HANDLER = 'checkApprovalReminders';
+var WP_REMINDER_MINUTES = 5;
+
+function installApprovalReminderTrigger() {
+  var removed = removeApprovalReminderTrigger();
+  ScriptApp.newTrigger(WP_REMINDER_HANDLER).timeBased().everyMinutes(WP_REMINDER_MINUTES).create();
+  var result = { removed: removed, installed: 1, everyMinutes: WP_REMINDER_MINUTES, webhook: !!teamsWebhookUrl_() };
+  Logger.log(JSON.stringify(result));
+  return result;
+}
+
+/** Removes every checkApprovalReminders trigger of this project. Returns how many were removed. */
+function removeApprovalReminderTrigger() {
+  var n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === WP_REMINDER_HANDLER) { ScriptApp.deleteTrigger(t); n++; }
+  });
+  return n;
 }
 
 // ---------------------------------------------------------------- Microsoft Teams (optional)

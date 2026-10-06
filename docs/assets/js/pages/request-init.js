@@ -22,5 +22,19 @@
   $('#agreement').innerHTML = li(D.safetyAgreement);
   $('#remarks').innerHTML = li(D.remarks);
   $('#max-mb').textContent = D.config.uploadMaxMb;
+
+  // ผู้รับผิดชอบงาน (approval workflow): public list of id + name. Empty list = no
+  // responsible accounts yet → the request goes straight to the จป. (field stays hidden).
+  WP.respReady = WP.editMode ? Promise.resolve([]) : WP.get('responsibles').then(r => {
+    const list = r.ok && Array.isArray(r.data) ? r.data : [];
+    const sel = $('#responsible_id'), f = $('#resp-field');
+    if (list.length) {
+      sel.innerHTML = '<option value="">— เลือกผู้รับผิดชอบงาน —</option>' + list.map(x => `<option value="${+x.id}">${E(x.name)}</option>`).join('');
+      sel.required = true;
+      f.classList.remove('hide');
+    }
+    WP.respList = list;
+    return list;
+  });
   $('#attach').accept = D.config.uploadExt.map(x => '.' + x).join(',');
 })();

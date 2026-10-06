@@ -1,5 +1,5 @@
 /* Test runner: node test/run.js
- *  1. backend end-to-end tests (mocked Apps Script services)
+ *  1. backend end-to-end tests (mocked Apps Script services) + approval workflow / roles / reminders
  *  2. single-source-of-truth check: docs/assets/js/data.js === apps-script/Data.gs
  *  3. syntax check of every frontend JS file and every inline <script> in docs/
  *  4. appsscript.json manifest sanity
@@ -21,6 +21,11 @@ const e2e = require('./e2e.test.js')();
 passed += e2e.passed;
 failures.push(...e2e.failures);
 console.log(`backend e2e: ${e2e.passed} passed, ${e2e.failures.length} failed (${Date.now() - t0} ms)`);
+const tw = Date.now();
+const wf = require('./workflow.test.js')();
+passed += wf.passed;
+failures.push(...wf.failures);
+console.log(`approval workflow e2e: ${wf.passed} passed, ${wf.failures.length} failed (${Date.now() - tw} ms)`);
 
 // 2 ---------------------------------------------------------------------------
 const gsData = fs.readFileSync(path.join(ROOT, 'apps-script', 'Data.gs'), 'utf8');

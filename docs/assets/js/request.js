@@ -51,6 +51,15 @@
   };
   $('#add-worker').onclick = () => addWorker();
 
+  // ---------- ผู้รับผิดชอบงาน → pre-fills "ชื่อผู้รับผิดชอบงานโครงการ" (still editable) ----------
+  let autoOwner = '';
+  $('#responsible_id').addEventListener('change', e => {
+    const o = e.target.selectedOptions[0];
+    const name = o && o.value ? o.textContent : '';
+    if (!form.owner_name.value.trim() || form.owner_name.value === autoOwner) { form.owner_name.value = name; autoOwner = name; form.owner_name.classList.remove('invalid'); }
+  });
+  const workflow = () => !!(WP.respList && WP.respList.length);
+
   // ---------- Signatures / File (new requests only) ----------
   const fileIn = $('#attach'), drop = $('#drop');
   if (!editId) {
@@ -123,7 +132,10 @@
     $('#submit').classList.toggle('hide', step !== 3);
     if (step === 2) buildChecklist();
     if (step === 3 && !editId) {
+      // with the approval workflow the ผู้รับผิดชอบงาน signs when approving (stage 2), not on this form
+      $('#sig-own').closest('.field').classList.toggle('hide', workflow());
       ['sig-req', 'sig-own'].forEach(id => { if (!pads[id]) pads[id] = new WP.SignaturePad($('#' + id)); });
+      $('#submit').innerHTML = workflow() ? '<i class="fa-solid fa-paper-plane"></i> ส่งคำขออนุมัติ' : '<i class="fa-solid fa-paper-plane"></i> ส่งให้ จป. อนุมัติ';
     }
     scrollTo({ top: 0, behavior: 'smooth' });
   };
@@ -228,11 +240,19 @@
     if (f && f.size > CFG.uploadMaxMb * 1048576) return Swal.fire({ icon: 'error', title: `ไฟล์ใหญ่เกิน ${CFG.uploadMaxMb}MB` });
     if (f && !CFG.uploadExt.includes(f.name.split('.').pop().toLowerCase())) return Swal.fire({ icon: 'error', title: 'ชนิดไฟล์ไม่รองรับ', text: 'PDF/JPG/PNG/XLS/DOC เท่านั้น' });
 
+    await WP.respReady;
+    if (workflow() && !form.responsible_id.value) {
+      go(1); form.responsible_id.classList.add('invalid'); form.responsible_id.focus();
+      return Swal.fire({ icon: 'warning', title: 'กรุณาเลือกผู้รับผิดชอบงาน' });
+    }
     data.requester_sign = pads['sig-req'].toData();
-    data.owner_sign = pads['sig-own'].empty ? '' : pads['sig-own'].toData();
+    data.owner_sign = workflow() || pads['sig-own'].empty ? '' : pads['sig-own'].toData();
+    if (workflow()) data.responsible_id = +form.responsible_id.value;
+    const respName = workflow() ? form.responsible_id.selectedOptions[0].textContent : '';
     const ok = await Swal.fire({
       icon: 'question', title: 'ยืนยันส่งใบขออนุญาต?',
-      html: `ส่งไปยัง <b>เจ้าหน้าที่ความปลอดภัย (จป.)</b> เพื่อพิจารณาอนุมัติ<br><small>${WP.esc(data.location)} · ${data.work_date} ${data.time_from}-${data.time_to}</small>`,
+      html: (workflow() ? `ส่งไปยัง <b>ผู้รับผิดชอบงาน: ${WP.esc(respName)}</b> เพื่อเริ่มขั้นตอนอนุมัติ<br>(เจ้าของพื้นที่ → ผู้รับผิดชอบงาน → จป.)`
+        : 'ส่งไปยัง <b>เจ้าหน้าที่ความปลอดภัย (จป.)</b> เพื่อพิจารณาอนุมัติ') + `<br><small>${WP.esc(data.location)} · ${data.work_date} ${data.time_from}-${data.time_to}</small>`,
       showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-paper-plane"></i> ยืนยันส่ง', cancelButtonText: 'ตรวจสอบอีกครั้ง'
     });
     if (!ok.isConfirmed) return;

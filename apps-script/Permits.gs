@@ -3,8 +3,22 @@
  * index.php / status.php / track.php / print.php / file.php / admin/*.php.
  *
  * Read access to a permit (details, logs, signatures, attachment) is granted to
- *   (a) a logged-in จป. admin (by `id`, with `session`), or
- *   (b) the requester holding that permit's tracking token (`no` + `t`).
+ *   (a) a logged-in จป. (role safety) — every permit (by `id`, with `session`),
+ *   (b) a logged-in approver (responsible / area_owner) — only permits they are
+ *       assigned to (responsible_id / area_owner_id), by `id`, or
+ *   (c) the requester holding that permit's tracking token (`no` + `t`).
+ *
+ * Approval workflow (status stays "pending" until the จป. decides):
+ *   submit (requester picks an active "ผู้รับผิดชอบงาน")
+ *   → stage assign  "รอระบุเจ้าของพื้นที่"     the assigned responsible picks the area owner (or rejects)
+ *   → stage area    "รอเจ้าของพื้นที่อนุมัติ"    the assigned area owner approves (signature) or rejects
+ *   → stage resp    "รอผู้รับผิดชอบงานอนุมัติ"   the assigned responsible approves (signature) or rejects
+ *   → stage safety  "รอ จป. อนุมัติ"            any จป.: review / approve / reject exactly as before
+ *   → approved → inspections / close (expiry counts from the work window, as before)
+ * Only the assignee of the current stage may act; a จป. may reassign the
+ * responsible / area owner (someone is absent) but never act for them.
+ * A pending permit without responsible_id (created before the workflow, or while
+ * no responsible user existed) is at stage "safety" directly.
  */
 
 var WP_MIME_BY_EXT = {
@@ -216,9 +230,13 @@ function logsFor_(ctx, permitId) {
 }
 
 // ---------------------------------------------------------------- shaping
-function permitOut_(r) {
+/**
+ * Permit as the API returns it. `staff` (a logged-in user reading by id) also gets
+ * the assignee user ids; nobody ever gets an e-mail address, a token or a file id.
+ */
+function permitOut_(r, staff) {
   var types = jdec_(r.work_types, []);
-  return {
+  var out = {
     id: Number(r.id), permit_no: r.permit_no, company: r.company, permit_type: r.permit_type,
     work_types: types, work_date: r.work_date, time_from: r.time_from, time_to: r.time_to,
     requester_title: r.requester_title, requester_name: r.requester_name, requester_company: r.requester_company,
@@ -230,8 +248,20 @@ function permitOut_(r) {
     has_owner_sign: !!r.owner_sign_file, has_approver_sign: !!r.approver_sign_file,
     status: r.status, es: effectiveStatus_(r), end_ts: permitEndTs_(r),
     approver_name: r.approver_name, approve_comment: r.approve_comment,
-    approved_at: r.approved_at, closed_at: r.closed_at, created_at: r.created_at, updated_at: r.updated_at
+    approved_at: r.approved_at, closed_at: r.closed_at, created_at: r.created_at, updated_at: r.updated_at,
+    // approval workflow
+    stage: stageOf_(r), workflow: !!Number(r.responsible_id) || !!r.area_owner_id,
+    responsible_name: r.responsible_name, area_owner_name: r.area_owner_name,
+    area_assigned_at: r.area_assigned_at, area_approved_at: r.area_approved_at, area_comment: r.area_comment,
+    resp_approved_at: r.resp_approved_at, resp_comment: r.resp_comment,
+    has_area_sign: !!r.area_sign_file, has_resp_sign: !!r.resp_sign_file,
+    stage_started_at: r.stage_started_at, reject_stage: r.reject_stage
   };
+  if (staff) {
+    out.responsible_id = Number(r.responsible_id) || 0;
+    out.area_owner_id = Number(r.area_owner_id) || 0;
+  }
+  return out;
 }
 
 function listRowOut_(r) {
@@ -240,7 +270,9 @@ function listRowOut_(r) {
     work_types: jdec_(r.work_types, []), work_date: r.work_date, time_from: r.time_from, time_to: r.time_to,
     requester_title: r.requester_title, requester_name: r.requester_name, requester_company: r.requester_company,
     requester_phone: r.requester_phone, location: r.location, worker_count: Number(r.worker_count) || 0,
-    approver_name: r.approver_name, created_at: r.created_at, end_ts: permitEndTs_(r)
+    approver_name: r.approver_name, created_at: r.created_at, end_ts: permitEndTs_(r),
+    stage: stageOf_(r), responsible_name: r.responsible_name, area_owner_name: r.area_owner_name,
+    stage_started_at: r.stage_started_at
   };
 }
 
@@ -250,14 +282,16 @@ function permitsDesc_(ctx) {
 
 /**
  * Resolves the permit a caller may read:
- *  - `id` → admin session required
+ *  - `id` → session required: a จป. reads any permit, an approver only the
+ *    permits assigned to them (others look like "not found"); sets ctx.staff
  *  - `no` + `t` → tracking token must match that permit (constant-time)
  */
 function authorizedPermit_(p, ctx) {
   if (p.id !== undefined && p.id !== null && p.id !== '') {
-    requireAdmin_(p, ctx);
+    var u = requireUser_(p, ctx);
     var byId = findById_(table_(ctx, 'permits'), p.id);
-    if (!byId) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
+    if (!byId || !canViewPermit_(u, byId)) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
+    ctx.staff = true;
     return byId;
   }
   var no = str_(p.no, 30).toUpperCase();
@@ -374,25 +408,33 @@ function submitOut_(ctx, row, d) {
   return out;
 }
 
-/** api.php?action=submit — anonymous, like the original. */
+/**
+ * api.php?action=submit — anonymous, like the original.
+ * `responsible_id`: the "ผู้รับผิดชอบงาน" picked from action=responsibles. Required
+ * while at least one active responsible user exists (the permit then starts at
+ * stage "assign"); with no responsible user at all the permit goes straight to
+ * the จป. (stage "safety"), so the form keeps working before accounts are set up.
+ */
 function apiSubmit_(d) {
-  var fields = cleanRequestFields_(d, null);
-  var reqSign = checkSignature_(d.requester_sign);
-  if (!reqSign) fail_('กรุณาลงลายมือชื่อผู้ขออนุญาต');
-  var ownSign = checkSignature_(d.owner_sign);
-  var att = checkAttachment_(d.attachment);
   var ridKey = submitRidKey_(d);
   if (ridKey) { // already created by an earlier try: answer the same, create nothing
     var rctx = { tables: {} }, prev = submitReplay_(rctx, ridKey);
     if (prev) return submitOut_(rctx, prev, d);
   }
+  var resp0 = pickResponsible_({ tables: {} }, d); // validated before any Drive upload
+  if (resp0 && str_(d.owner_name) === '') d = Object.assign({}, d, { owner_name: resp0.fullname });
+  var fields = cleanRequestFields_(d, null);
+  var reqSign = checkSignature_(d.requester_sign);
+  if (!reqSign) fail_('กรุณาลงลายมือชื่อผู้ขออนุญาต');
+  var ownSign = checkSignature_(d.owner_sign);
+  var att = checkAttachment_(d.attachment);
 
   var row = Object.assign({}, fields, {
     inspections: '{}', status: 'pending',
     token: randomHex_(32), created_at: '', updated_at: ''
   });
 
-  var created = [], fresh = null, out;
+  var created = [], fresh = null, out, resp = null;
   try {
     var tag = stampName_('png').replace(/\.png$/, '');
     row.requester_sign_file = saveDriveFile_(reqSign, 'image/png', tag + '_requester.png');
@@ -424,6 +466,12 @@ function apiSubmit_(d) {
       row.permit_no = prefix + n;
       row.id = nextId_(t);
       row.created_at = row.updated_at = nowStr_();
+      resp = pickResponsible_(ctx, d); // again under the lock: the account may have been disabled meanwhile
+      if (resp) {
+        row.responsible_id = resp.id;
+        row.responsible_name = resp.fullname;
+        enterStage_(row, 'assign', row.created_at);
+      }
       appendRow_(t, row);
       addLog_(ctx, row.id, 'submit', row.requester_name, 'ยื่นใบขออนุญาตปฏิบัติงาน');
       if (ridKey) {
@@ -439,7 +487,10 @@ function apiSubmit_(d) {
     throw err;
   }
   // Only a permit created by THIS call is announced (a replayed retry returned above / set no `fresh`).
-  if (fresh) notifyNewPermit_(fresh); // after the lock is released; never throws
+  if (fresh) { // after the lock is released; never throws
+    if (resp) notifyNewWorkflowPermit_(fresh, resp);
+    else notifyNewPermit_(fresh);
+  }
   return out;
 }
 
@@ -466,12 +517,14 @@ function apiTrack_(d, ctx) {
 /** status.php / admin/view.php / print.php data. */
 function apiPermit_(p, ctx) {
   var r = authorizedPermit_(p, ctx);
-  var out = { permit: permitOut_(r), logs: logsFor_(ctx, r.id) };
+  var out = { permit: permitOut_(r, !!ctx.staff), logs: logsFor_(ctx, r.id) };
   if (p.signs) {
     out.signs = {
       requester: driveDataUrl_(r.requester_sign_file),
       owner: driveDataUrl_(r.owner_sign_file),
-      approver: driveDataUrl_(r.approver_sign_file)
+      approver: driveDataUrl_(r.approver_sign_file),
+      area: driveDataUrl_(r.area_sign_file),
+      resp: driveDataUrl_(r.resp_sign_file)
     };
   }
   return out;
@@ -665,6 +718,10 @@ function apiDecide_(d, ctx) {
       var p = findById_(t, d.id);
       if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
       var stamp = nowStr_();
+      if (decision !== 'close' && p.status === 'pending' && stageOf_(p) !== 'safety') {
+        // stages 0–2 belong to the assigned responsible / area owner — the จป. may reassign, not act for them
+        fail_('ใบอนุญาตนี้ยังอยู่ในขั้นตอน "' + WP_DATA.stages[stageOf_(p)].label + '" — จป. พิจารณาได้หลังผู้รับผิดชอบงานอนุมัติแล้ว', 'CONFLICT');
+      }
       if (decision === 'approve') {
         if (p.status !== 'pending') fail_('ใบอนุญาตนี้ไม่ได้อยู่ในสถานะรออนุมัติ');
         if (!sign) fail_('กรุณาลงลายมือชื่อผู้อนุมัติ');
@@ -683,6 +740,7 @@ function apiDecide_(d, ctx) {
         if (comment === '') fail_('กรุณาระบุเหตุผลที่ไม่อนุมัติ');
         p.status = 'rejected'; p.approver_id = u.id; p.approver_name = u.fullname;
         p.approve_comment = comment; p.approved_at = stamp; p.updated_at = stamp;
+        if (p.responsible_id) p.reject_stage = 'safety';
         writeRow_(t, p);
         addLog_(ctx, p.id, 'reject', u.fullname, comment);
       } else {
@@ -699,6 +757,266 @@ function apiDecide_(d, ctx) {
     throw err;
   }
   notifyDecision_(done.row, decision, done.by, comment); // after the lock is released; never throws
+  return out;
+}
+
+// ---------------------------------------------------------------- APPROVAL WORKFLOW (stages 0–2)
+/** Current stage of a pending permit ('' when not pending). No responsible → straight to the จป. */
+function stageOf_(r) {
+  if (!r || r.status !== 'pending') return '';
+  var s = String(r.stage || '');
+  if (!Number(r.responsible_id) || !Object.prototype.hasOwnProperty.call(WP_DATA.stages, s)) return 'safety';
+  return s;
+}
+
+/** Starts a stage: its clock (stage_started_at) and its reminder bookkeeping restart. */
+function enterStage_(r, stage, stamp) {
+  r.stage = stage;
+  r.stage_started_at = stamp;
+  r.last_reminder_at = '';
+  r.reminder_count = '0';
+}
+
+/** User id assigned to a stage (0 for the จป. stage — any จป.). */
+function stageAssigneeId_(r, stage) {
+  if (stage === 'assign' || stage === 'resp') return Number(r.responsible_id) || 0;
+  if (stage === 'area') return Number(r.area_owner_id) || 0;
+  return 0;
+}
+
+/** May user `u` act on the CURRENT stage of permit `r`? (assignee + still holding the stage's role) */
+function canActOnStage_(u, r) {
+  var st = stageOf_(r);
+  if (!st) return false;
+  if (!hasRole_(u, WP_DATA.stages[st].role)) return false;
+  if (st === 'safety') return true;
+  return stageAssigneeId_(r, st) === Number(u.id);
+}
+
+/** จป.: every permit. Approvers: the permits they are assigned to (any status). */
+function canViewPermit_(u, r) {
+  if (hasRole_(u, 'safety')) return true;
+  var id = Number(u.id);
+  return (Number(r.responsible_id) === id && hasRole_(u, 'responsible')) ||
+    (Number(r.area_owner_id) === id && hasRole_(u, 'area_owner'));
+}
+
+function activeUsersWithRole_(ctx, role) {
+  return table_(ctx, 'users').rows
+    .filter(function (u) { return u.active === '1' && hasRole_(u, role); })
+    .sort(function (a, b) { return String(a.fullname).localeCompare(String(b.fullname), 'th') || Number(a.id) - Number(b.id); });
+}
+
+/** The active user with that id holding `role`, else null. */
+function activeRoleUser_(ctx, id, role) {
+  var u = findById_(table_(ctx, 'users'), id);
+  return u && u.active === '1' && hasRole_(u, role) ? u : null;
+}
+
+/** submit: the picked responsible (see apiSubmit_), or null when none is required. Throws when invalid. */
+function pickResponsible_(ctx, d) {
+  var id = Number(d.responsible_id) || 0;
+  if (!id) {
+    if (activeUsersWithRole_(ctx, 'responsible').length) fail_('กรุณาเลือกผู้รับผิดชอบงาน');
+    return null;
+  }
+  var u = activeRoleUser_(ctx, id, 'responsible');
+  if (!u) fail_('ผู้รับผิดชอบงานที่เลือกไม่ถูกต้องหรือถูกปิดการใช้งาน กรุณาเลือกใหม่');
+  return u;
+}
+
+function userNameList_(rows) {
+  return rows.map(function (u) { return { id: Number(u.id), name: u.fullname }; });
+}
+
+/** PUBLIC: active "ผู้รับผิดชอบงาน" for the request form — id + display name only (no username / e-mail). */
+function apiResponsibles_(p, ctx) {
+  return cachedRead_(ctx, 'responsibles', null, function () {
+    return { data: userNameList_(activeUsersWithRole_(ctx, 'responsible')), until: nowTs_() + WP_READ_CACHE_TTL };
+  });
+}
+
+/** Logged in: pickers (responsible → area owner; จป. → reassign). id + name only. */
+function apiApprovers_(p, ctx) {
+  requireUser_(p, ctx);
+  return {
+    responsible: userNameList_(activeUsersWithRole_(ctx, 'responsible')),
+    area_owner: userNameList_(activeUsersWithRole_(ctx, 'area_owner'))
+  };
+}
+
+/**
+ * "รออนุมัติของฉัน": pending permits whose CURRENT stage (0–2) is assigned to the
+ * caller, plus recent permits assigned to them. Only the caller's own permits —
+ * never admin-wide data. Cached per user under the data version.
+ */
+function apiMyTasks_(p, ctx) {
+  var u = requireUser_(p, ctx);
+  var uid = Number(u.id);
+  return cachedRead_(ctx, 'mytasks', { uid: uid, roles: userRoles_(u).join() }, function () {
+    var pending = [], recent = [];
+    var rows = permitsDesc_(ctx);
+    rows.forEach(function (r) {
+      var st = stageOf_(r);
+      if (st && st !== 'safety' && canActOnStage_(u, r)) pending.push(listRowOut_(r));
+      else if (recent.length < 50 && (Number(r.responsible_id) === uid || Number(r.area_owner_id) === uid) && canViewPermit_(u, r)) recent.push(listRowOut_(r));
+    });
+    pending.reverse(); // oldest waiting first
+    return { data: { pending: pending, recent: recent, count: pending.length }, until: permitsValidUntil_(rows) };
+  });
+}
+
+/** Loads the permit for a workflow write (under the lock) and checks the caller may see it. */
+function wfPermit_(d, ctx, u) {
+  var t = table_(ctx, 'permits');
+  var p = findById_(t, d.id);
+  if (!p || !canViewPermit_(u, p)) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
+  return { t: t, p: p };
+}
+
+function wfStageCheck_(p, want) {
+  var st = stageOf_(p);
+  if (want.indexOf(st) < 0) {
+    var now = p.status !== 'pending' ? 'สถานะ "' + WP_DATA.status[p.status].label + '"' : 'ขั้นตอน "' + WP_DATA.stages[st].label + '"';
+    fail_('ใบอนุญาตนี้อยู่ใน' + now + ' แล้ว — ทำรายการนี้ไม่ได้ กรุณาโหลดหน้าใหม่', 'CONFLICT');
+  }
+  return st;
+}
+
+/** Stage 0: the assigned responsible picks the area owner → stage 1. */
+function apiAssignArea_(d, ctx) {
+  requireUser_(d, ctx);
+  var done = null;
+  var out = withLock_(function () {
+    relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
+    var u = requireUser_(d, ctx);
+    var x = wfPermit_(d, ctx, u), p = x.p;
+    wfStageCheck_(p, ['assign']);
+    if (!canActOnStage_(u, p)) fail_('เฉพาะผู้รับผิดชอบงานที่ได้รับมอบหมาย (' + p.responsible_name + ') เท่านั้นที่ระบุเจ้าของพื้นที่ได้', 'FORBIDDEN');
+    checkBase_(p, d);
+    var ao = activeRoleUser_(ctx, d.area_owner_id, 'area_owner');
+    if (!ao) fail_('กรุณาเลือกเจ้าของพื้นที่ (ผู้ใช้ที่มีบทบาทเจ้าของพื้นที่และเปิดใช้งานอยู่)');
+    var stamp = nowStr_();
+    p.area_owner_id = ao.id; p.area_owner_name = ao.fullname; p.area_assigned_at = stamp;
+    enterStage_(p, 'area', stamp);
+    p.updated_at = stamp;
+    writeRow_(x.t, p);
+    addLog_(ctx, p.id, 'assign_area', u.fullname, 'ระบุเจ้าของพื้นที่: ' + ao.fullname);
+    done = { row: p, next: [ao] };
+    return { stage: p.stage, updated_at: p.updated_at };
+  });
+  notifyStage_(done.row, done.next, false); // after the lock is released; never throws
+  return out;
+}
+
+/**
+ * Stages 0–2 by their assignee: approve (stage 1 / 2, signature required) or
+ * reject (any of 0–2, reason required). Stage 3 is the จป.'s action=decide.
+ */
+function apiStageDecide_(d, ctx) {
+  requireUser_(d, ctx);
+  var decision = String(d.decision || '');
+  var comment = str_(d.comment, 2000);
+  if (['approve', 'reject'].indexOf(decision) < 0) fail_('คำสั่งไม่ถูกต้อง');
+  if (decision === 'reject' && comment === '') fail_('กรุณาระบุเหตุผลที่ไม่อนุมัติ');
+  var sign = decision === 'approve' ? checkSignature_(d.sign) : null;
+  var signFile = '', done = null, out;
+  try {
+    out = withLock_(function () {
+      relockCtx_(ctx);
+      var u = requireUser_(d, ctx);
+      var x = wfPermit_(d, ctx, u), p = x.p;
+      var st = wfStageCheck_(p, ['assign', 'area', 'resp']);
+      if (!canActOnStage_(u, p)) {
+        var who = st === 'area' ? 'เจ้าของพื้นที่ที่ได้รับมอบหมาย (' + p.area_owner_name + ')' : 'ผู้รับผิดชอบงานที่ได้รับมอบหมาย (' + p.responsible_name + ')';
+        fail_('ขั้นตอน "' + WP_DATA.stages[st].label + '" ทำได้เฉพาะ' + who + ' เท่านั้น', 'FORBIDDEN');
+      }
+      checkBase_(p, d);
+      var stamp = nowStr_(), roleLabel = WP_DATA.roles[WP_DATA.stages[st].role];
+      if (decision === 'reject') {
+        p.status = 'rejected'; p.approver_id = u.id; p.approver_name = u.fullname;
+        p.approve_comment = comment; p.approved_at = stamp; p.reject_stage = st; p.updated_at = stamp;
+        writeRow_(x.t, p);
+        addLog_(ctx, p.id, 'reject', u.fullname, '[' + roleLabel + '] ' + comment);
+        done = { row: p, reject: true, by: u.fullname + ' (' + roleLabel + ')', stage: st };
+        return { status: p.status, stage: '', updated_at: p.updated_at };
+      }
+      if (st === 'assign') fail_('กรุณาระบุเจ้าของพื้นที่ก่อน (ขั้นตอนนี้ไม่มีการลงนาม)');
+      if (!sign) fail_('กรุณาลงลายมือชื่อ' + roleLabel);
+      signFile = saveDriveFile_(sign, 'image/png', p.permit_no + '_' + st + '_' + randomHex_(8) + '.png');
+      var next;
+      if (st === 'area') {
+        p.area_approved_at = stamp; p.area_sign_file = signFile; p.area_comment = comment;
+        enterStage_(p, 'resp', stamp);
+        addLog_(ctx, p.id, 'area_approve', u.fullname, comment || 'เจ้าของพื้นที่อนุมัติ');
+        var ru = findById_(table_(ctx, 'users'), p.responsible_id);
+        next = ru ? [ru] : [];
+      } else {
+        p.resp_approved_at = stamp; p.resp_sign_file = signFile; p.resp_comment = comment;
+        enterStage_(p, 'safety', stamp);
+        addLog_(ctx, p.id, 'resp_approve', u.fullname, comment || 'ผู้รับผิดชอบงานอนุมัติ');
+        next = activeUsersWithRole_(ctx, 'safety');
+      }
+      p.updated_at = stamp;
+      writeRow_(x.t, p);
+      done = { row: p, next: next };
+      return { status: p.status, stage: p.stage, updated_at: p.updated_at };
+    });
+  } catch (err) {
+    trashDriveFile_(signFile);
+    throw err;
+  }
+  if (done.reject) notifyDecision_(done.row, 'reject', done.by, comment, done.stage);
+  else notifyStage_(done.row, done.next, false);
+  return out;
+}
+
+/**
+ * จป. only: reassign the responsible (stages 0–2) and/or the area owner (stage 1)
+ * of a pending permit, e.g. when someone is absent. If the CURRENT stage's
+ * assignee changes, that stage's clock and reminders restart and the new
+ * assignee is notified. The จป. never approves stages 0–2 themself.
+ */
+function apiReassign_(d, ctx) {
+  requireAdmin_(d, ctx);
+  var hasR = !!(Number(d.responsible_id) || 0), hasA = !!(Number(d.area_owner_id) || 0);
+  if (!hasR && !hasA) fail_('กรุณาเลือกผู้ที่จะมอบหมาย');
+  var done = null;
+  var out = withLock_(function () {
+    relockCtx_(ctx);
+    var u = requireAdmin_(d, ctx);
+    var x = wfPermit_(d, ctx, u), p = x.p;
+    var st = wfStageCheck_(p, ['assign', 'area', 'resp']);
+    checkBase_(p, d);
+    var notes = [], before = stageAssigneeId_(p, st);
+    if (hasR) {
+      var ru = activeRoleUser_(ctx, d.responsible_id, 'responsible');
+      if (!ru) fail_('ผู้รับผิดชอบงานที่เลือกไม่ถูกต้องหรือถูกปิดการใช้งาน');
+      if (Number(ru.id) !== Number(p.responsible_id)) {
+        notes.push('ผู้รับผิดชอบงาน: ' + (p.responsible_name || '-') + ' → ' + ru.fullname);
+        p.responsible_id = ru.id; p.responsible_name = ru.fullname;
+      }
+    }
+    if (hasA) {
+      if (st !== 'area') fail_('เปลี่ยนเจ้าของพื้นที่ได้เฉพาะในขั้นตอน "' + WP_DATA.stages.area.label + '"', 'CONFLICT');
+      var ao = activeRoleUser_(ctx, d.area_owner_id, 'area_owner');
+      if (!ao) fail_('เจ้าของพื้นที่ที่เลือกไม่ถูกต้องหรือถูกปิดการใช้งาน');
+      if (Number(ao.id) !== Number(p.area_owner_id)) {
+        notes.push('เจ้าของพื้นที่: ' + (p.area_owner_name || '-') + ' → ' + ao.fullname);
+        p.area_owner_id = ao.id; p.area_owner_name = ao.fullname;
+      }
+    }
+    if (!notes.length) return { changed: false, stage: st, updated_at: p.updated_at };
+    var stamp = nowStr_();
+    var moved = stageAssigneeId_(p, st) !== before;
+    if (moved) enterStage_(p, st, stamp);
+    p.updated_at = stamp;
+    writeRow_(x.t, p);
+    addLog_(ctx, p.id, 'reassign', u.fullname, 'มอบหมายใหม่ — ' + notes.join(', '));
+    if (moved) done = { row: p, next: [findById_(table_(ctx, 'users'), stageAssigneeId_(p, st))] };
+    return { changed: true, stage: st, updated_at: p.updated_at };
+  });
+  if (done) notifyStage_(done.row, done.next, true);
   return out;
 }
 
@@ -754,7 +1072,7 @@ function apiDelete_(d, ctx) {
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
     if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
-    var fileIds = [p.attachment_file, p.requester_sign_file, p.owner_sign_file, p.approver_sign_file];
+    var fileIds = [p.attachment_file, p.requester_sign_file, p.owner_sign_file, p.approver_sign_file, p.area_sign_file, p.resp_sign_file];
     fileIds.forEach(trashDriveFile_);
     var lt = table_(ctx, 'permit_logs');
     var logs = lt.rows.filter(function (l) { return Number(l.permit_id) === Number(p.id); });
@@ -827,12 +1145,12 @@ function apiUpdatePermit_(d, ctx) {
     checkBase_(p, d);
     var f = cleanRequestFields_(d, p);
     var changed = Object.keys(WP_REQUEST_FIELDS).filter(function (k) { return !sameValue_(p[k], f[k]); });
-    if (!changed.length) return { changed: [], permit: permitOut_(p) };
+    if (!changed.length) return { changed: [], permit: permitOut_(p, true) };
     changed.forEach(function (k) { p[k] = f[k]; });
     p.updated_at = nowStr_();
     writeRow_(t, p); // expiry (es / end_ts) is derived from work_date + times on every read
     addLog_(ctx, p.id, 'edit', u.fullname, 'แก้ไขข้อมูล: ' + changed.map(function (k) { return WP_REQUEST_FIELDS[k]; }).join(', '));
-    return { changed: changed, permit: permitOut_(p) };
+    return { changed: changed, permit: permitOut_(p, true) };
   });
 }
 
@@ -871,7 +1189,7 @@ function apiResetData_(p, ctx) {
     while (it.hasNext()) trashOne(it.next());
     var trackKeys = [];
     pt.rows.forEach(function (r) {
-      [r.attachment_file, r.requester_sign_file, r.owner_sign_file, r.approver_sign_file].forEach(function (id) {
+      [r.attachment_file, r.requester_sign_file, r.owner_sign_file, r.approver_sign_file, r.area_sign_file, r.resp_sign_file].forEach(function (id) {
         if (!id || seen[id]) return;
         try { trashOne(DriveApp.getFileById(id)); } catch (e) { seen[id] = true; }
       });
@@ -912,6 +1230,7 @@ var WP_PROP_TEAMS_WEBHOOK = 'TEAMS_WEBHOOK_URL';
 var WP_SITE_URL_DEFAULT = 'https://watanathep8-dotcom.github.io/work-permit';
 var WP_TEAMS_TEXT_MAX = 300;   // chars per fact value
 var WP_TEAMS_NOTE_MAX = 1000;  // chars of a reason / note block
+var WP_TEAMS_MENTION_MAX = 10; // people mentioned in one card (stage 3: the active จป.)
 var WP_THAI_MONTHS = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
 
 /** Public site base (no trailing slash): Script Property WP_SITE_URL, else the GitHub Pages default. */
@@ -954,21 +1273,57 @@ function teamsWorkTypes_(r) {
   }).filter(function (x) { return x; }).join(', ');
 }
 
+/** A user's name as used inside <at>…</at> (one line, no angle brackets). */
+function teamsMentionName_(u) {
+  return teamsText_(u && u.fullname, 100).replace(/[<>]/g, '') || '-';
+}
+
 /**
- * Adaptive Card message. o = {title, color ('Good'|'Attention'), facts: [[label, value]],
- * note: {label, text}, url, urlTitle}. Empty fact values are left out.
+ * "Name A, Name B" for a card: users with a valid e-mail (company e-mail = Teams
+ * UPN) become <at>Name</at> mentions, the others stay plain names.
+ * Returns {text, mentions: [{name, email}]}.
+ */
+function teamsWho_(users) {
+  var parts = [], mentions = [];
+  (users || []).filter(function (u) { return u; }).slice(0, WP_TEAMS_MENTION_MAX).forEach(function (u) {
+    var name = teamsMentionName_(u), email = String(u.email || '').trim().toLowerCase();
+    if (email && WP_EMAIL_RE.test(email)) {
+      parts.push('<at>' + name + '</at>');
+      mentions.push({ name: name, email: email });
+    } else {
+      parts.push(name);
+    }
+  });
+  return { text: parts.join(', '), mentions: mentions };
+}
+
+/**
+ * Adaptive Card message. o = {title, color ('Good'|'Attention'), lines: [text], mentions: [{name, email}],
+ * facts: [[label, value]], note: {label, text}, url, urlTitle, subtitle}. Empty fact values are left out.
+ * `title` / `lines` may contain "<at>Name</at>" for the matching `mentions`
+ * (Teams Workflows: msteams.entities of type "mention", mentioned.id = the user's e-mail / UPN).
  */
 function teamsCard_(o) {
   var attention = o.color === 'Attention';
+  var mentions = [], seen = {};
+  (o.mentions || []).forEach(function (m) {
+    var k = m.email + '|' + m.name;
+    if (!seen[k]) { seen[k] = true; mentions.push(m); }
+  });
   var facts = (o.facts || []).map(function (f) { return { title: teamsText_(f[0], 60), value: teamsText_(f[1]) }; })
     .filter(function (f) { return f.title !== '' && f.value !== ''; });
   var body = [{
     type: 'Container', style: attention ? 'attention' : 'good', bleed: true,
     items: [
-      { type: 'TextBlock', text: teamsText_(o.title, 120), size: 'Large', weight: 'Bolder', color: attention ? 'Attention' : 'Good', wrap: true },
-      { type: 'TextBlock', text: WP_DATA.config.appName + ' (' + WP_DATA.config.formCode + ') · แจ้งเตือน จป.', size: 'Small', isSubtle: true, spacing: 'None', wrap: true }
+      // a title with mentions is not cut (a cut could break an <at> tag); names are ≤ 100 chars, ≤ WP_TEAMS_MENTION_MAX people
+      { type: 'TextBlock', text: teamsText_(o.title, mentions.length ? 2000 : 120), size: 'Large', weight: 'Bolder', color: attention ? 'Attention' : 'Good', wrap: true },
+      { type: 'TextBlock', text: WP_DATA.config.appName + ' (' + WP_DATA.config.formCode + ') · ' + (o.subtitle || 'แจ้งเตือน จป.'), size: 'Small', isSubtle: true, spacing: 'None', wrap: true }
     ]
   }];
+  (o.lines || []).forEach(function (line) {
+    var text = teamsText_(line, 2000);
+    if (text !== '') body.push({ type: 'TextBlock', text: text, wrap: true, weight: 'Bolder', spacing: 'Medium' });
+  });
   if (facts.length) body.push({ type: 'FactSet', facts: facts, spacing: 'Medium' });
   var note = o.note ? str_(o.note.text, WP_TEAMS_NOTE_MAX) : '';
   if (note !== '') {
@@ -980,6 +1335,11 @@ function teamsCard_(o) {
     $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
     type: 'AdaptiveCard', version: '1.4', body: body, actions: [], msteams: { width: 'Full' }
   };
+  if (mentions.length) {
+    content.msteams.entities = mentions.map(function (m) {
+      return { type: 'mention', text: '<at>' + m.name + '</at>', mentioned: { id: m.email, name: m.name } };
+    });
+  }
   if (o.url) content.actions.push({ type: 'Action.OpenUrl', title: teamsText_(o.urlTitle || 'เปิดดู', 40), url: o.url });
   return { type: 'message', attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', contentUrl: null, content: content }] };
 }
@@ -1050,10 +1410,11 @@ var WP_TEAMS_DECISIONS = {
   close: { title: 'ปิดงานใบอนุญาตแล้ว', color: 'Good', label: 'ปิดงาน', note: 'หมายเหตุ' }
 };
 
-/** approve / reject / close by an admin. */
-function notifyDecision_(r, decision, byName, comment) {
+/** approve / reject / close by a จป.; reject at stage 0–2 by its assignee (`stage` = where it was rejected). */
+function notifyDecision_(r, decision, byName, comment, stage) {
   return notifyTeams_(function () {
     var h = WP_TEAMS_DECISIONS[decision];
+    var S = stage ? WP_DATA.stages[stage] : null;
     return teamsCard_({
       title: h.title + ' ' + r.permit_no, color: h.color,
       facts: [
@@ -1062,6 +1423,7 @@ function notifyDecision_(r, decision, byName, comment) {
         ['ผู้ขออนุญาต', teamsRequester_(r) + (r.requester_company ? ' (' + r.requester_company + ')' : '')],
         ['วันที่ปฏิบัติงาน', teamsWhen_(r)],
         ['ผลการพิจารณา', h.label],
+        ['ขั้นตอน', S ? 'ขั้นที่ ' + S.no + ' — ' + S.label : ''],
         ['โดย', byName]
       ],
       note: comment ? { label: h.note, text: comment } : null,
@@ -1100,6 +1462,149 @@ function notifyResetData_(res, byName) {
         ['ผู้ใช้งาน จป.', 'ไม่ถูกลบ'],
         ['รีเซ็ตโดย', byName]
       ]
+    });
+  });
+}
+
+// ---------------------------------------------------------------- workflow notifications (@mentions)
+/** "รออนุมัติขั้นที่ X: <role> — <at>Name</at>" for the CURRENT stage of r. */
+function teamsStageLine_(r, users) {
+  var st = stageOf_(r), S = WP_DATA.stages[st];
+  var who = teamsWho_(users);
+  var text = who.text || (st === 'safety' ? 'เจ้าหน้าที่ความปลอดภัย (จป.)' : '-');
+  return { text: 'รออนุมัติขั้นที่ ' + S.no + ': ' + WP_DATA.roles[S.role] + ' — ' + text, mentions: who.mentions };
+}
+
+/** Facts shared by the workflow cards (no token, no e-mail). */
+function teamsWorkflowFacts_(r) {
+  var st = stageOf_(r);
+  return [
+    ['เลขที่', r.permit_no],
+    ['บริษัท (พื้นที่)', r.company],
+    ['ลักษณะงาน', teamsWorkTypes_(r)],
+    ['วันที่ปฏิบัติงาน', teamsWhen_(r)],
+    ['ผู้ขออนุญาต', teamsRequester_(r) + (r.requester_company ? ' (' + r.requester_company + ')' : '')],
+    ['สถานที่ปฏิบัติงาน', r.location],
+    ['ขั้นตอนปัจจุบัน', st ? WP_DATA.stages[st].label : '']
+  ];
+}
+
+/** Users to mention for the current stage: its assignee, or the active จป. for stage 3. */
+function stageUsers_(ctx, r) {
+  var st = stageOf_(r);
+  if (st === 'safety') return activeUsersWithRole_(ctx, 'safety');
+  var u = findById_(table_(ctx, 'users'), stageAssigneeId_(r, st));
+  return u ? [u] : [];
+}
+
+/** submit with a responsible: "มีคำขอใบอนุญาตใหม่" @mentioning them (stage 0: pick the area owner). */
+function notifyNewWorkflowPermit_(r, resp) {
+  return notifyTeams_(function () {
+    var who = teamsWho_([resp]);
+    var facts = teamsWorkflowFacts_(r);
+    facts.splice(5, 0, ['เบอร์โทรผู้ขอ', r.requester_phone], ['จำนวนผู้ปฏิบัติงาน', (Number(r.worker_count) || 0) + ' คน']);
+    return teamsCard_({
+      title: 'มีคำขอใบอนุญาตใหม่', color: 'Good', subtitle: 'แจ้งเตือนผู้อนุมัติ',
+      lines: ['ขั้นที่ 0: ' + WP_DATA.roles.responsible + ' — ' + who.text + ' กรุณาเข้าสู่ระบบเพื่อระบุเจ้าของพื้นที่'],
+      mentions: who.mentions,
+      facts: facts,
+      url: teamsAdminViewUrl_(r.id), urlTitle: 'เปิดคำขอ / ระบุเจ้าของพื้นที่'
+    });
+  });
+}
+
+/** A stage completed (or its assignee was replaced): card to the next approver. */
+function notifyStage_(r, users, reassigned) {
+  return notifyTeams_(function () {
+    var line = teamsStageLine_(r, users);
+    return teamsCard_({
+      title: line.text, color: 'Good', subtitle: reassigned ? 'มอบหมายผู้อนุมัติใหม่' : 'แจ้งเตือนผู้อนุมัติ',
+      mentions: line.mentions,
+      lines: [reassigned ? 'จป. มอบหมายผู้อนุมัติใหม่สำหรับ ' + r.permit_no : 'ขั้นตอนก่อนหน้าเสร็จแล้ว — ' + r.permit_no + ' รอการพิจารณาของท่าน'],
+      facts: teamsWorkflowFacts_(r),
+      url: teamsAdminViewUrl_(r.id), urlTitle: 'เปิดพิจารณา'
+    });
+  });
+}
+
+// ---------------------------------------------------------------- approval reminders (time trigger, Setup.gs)
+/**
+ * A stage that has waited WP_REMIND_AFTER_SEC gets a reminder card @mentioning
+ * its assignee, then one every WP_REMIND_EVERY_SEC, at most WP_REMIND_MAX per
+ * stage. A stage change (enterStage_) restarts the count; a decided permit is not
+ * pending any more. Bookkeeping (last_reminder_at, reminder_count) is written
+ * under the script lock BEFORE the card is sent, so overlapping or restarted
+ * trigger runs never send the same reminder twice (at most once: a failed send is
+ * not retried). It replaces only the write mark, not the data version (reminder
+ * fields are in no cached read). Permits from before the workflow (no
+ * stage_started_at) are never reminded.
+ */
+var WP_REMIND_AFTER_SEC = 1800;
+var WP_REMIND_EVERY_SEC = 1800;
+var WP_REMIND_MAX = 6;
+var WP_REMIND_PER_RUN = 20; // UrlFetch quota: the rest is picked up by the next run (still due)
+
+function reminderDue_(r, now) {
+  if (!stageOf_(r)) return false;
+  var started = stampTs_(r.stage_started_at);
+  if (!started) return false;
+  if ((Number(r.reminder_count) || 0) >= WP_REMIND_MAX) return false;
+  var last = stampTs_(r.last_reminder_at);
+  return now - started >= WP_REMIND_AFTER_SEC && (!last || now - last >= WP_REMIND_EVERY_SEC);
+}
+
+/** Time trigger (every 5 min, installApprovalReminderTrigger()). Never throws. */
+function checkApprovalReminders() {
+  if (!props_().getProperty(WP_PROP_SPREADSHEET)) return { ok: false, skipped: 'setupSystem() ยังไม่ได้รัน' };
+  if (!teamsWebhookUrl_()) return { ok: true, due: 0, sent: 0, skipped: 'ไม่ได้ตั้งค่า ' + WP_PROP_TEAMS_WEBHOOK };
+  var jobs = [], now;
+  try {
+    now = nowTs_();
+    // cheap check without the lock: nothing due → done
+    if (!table_({ tables: {} }, 'permits').rows.some(function (r) { return reminderDue_(r, now); })) return { ok: true, due: 0, sent: 0 };
+    var lock = LockService.getScriptLock();
+    if (!lock.tryLock(10000)) return { ok: false, skipped: 'busy' };
+    try {
+      var ctx = { tables: {} };
+      var t = table_(ctx, 'permits'); // fresh, under the lock
+      var stamp = nowStr_();
+      t.rows.filter(function (r) { return reminderDue_(r, now); })
+        .sort(function (a, b) { return stampTs_(a.stage_started_at) - stampTs_(b.stage_started_at) || Number(a.id) - Number(b.id); })
+        .slice(0, WP_REMIND_PER_RUN)
+        .forEach(function (r) {
+          r.reminder_count = String((Number(r.reminder_count) || 0) + 1);
+          r.last_reminder_at = stamp;
+          writeRow_(t, r);
+          jobs.push({ row: r, users: stageUsers_(ctx, r) });
+        });
+      if (jobs.length) { SpreadsheetApp.flush(); bumpWriteMark_(); }
+    } finally {
+      lock.releaseLock();
+    }
+  } catch (e) {
+    console.warn('approval reminders failed: ' + (e && e.message ? e.message : e));
+    return { ok: false, error: String(e && e.message ? e.message : e) };
+  }
+  var sent = 0;
+  jobs.forEach(function (j) {
+    var code = notifyReminder_(j.row, j.users, now);
+    if (code >= 200 && code < 300) sent++;
+  });
+  return { ok: true, due: jobs.length, sent: sent };
+}
+
+function notifyReminder_(r, users, now) {
+  return notifyTeams_(function () {
+    var line = teamsStageLine_(r, users);
+    var mins = Math.max(0, Math.floor((now - stampTs_(r.stage_started_at)) / 60));
+    var facts = teamsWorkflowFacts_(r);
+    facts.push(['รอตั้งแต่', teamsThaiDate_(r.stage_started_at, true)]);
+    return teamsCard_({
+      title: 'ค้างอนุมัติ ' + mins + ' นาที — ' + r.permit_no, color: 'Attention', subtitle: 'เตือนผู้อนุมัติ',
+      lines: [line.text, 'แจ้งเตือนครั้งที่ ' + r.reminder_count + '/' + WP_REMIND_MAX],
+      mentions: line.mentions,
+      facts: facts,
+      url: teamsAdminViewUrl_(r.id), urlTitle: 'เปิดพิจารณา'
     });
   });
 }
