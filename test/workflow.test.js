@@ -302,6 +302,11 @@ module.exports = function run() {
     const kw = gas.triggers.filter((x) => x.getHandlerFunction() === 'keepWarm');
     return a.installed === 1 && b.removed === 1 && rem.length === 1 && rem[0].minutes === 5 && kw.length === 1 && kw[0].minutes === 10;
   })());
+  check('reminder trigger installer requests external_request + scriptapp scopes (FULL)', gas.scopeRequests.length >= 1 && gas.scopeRequests.every((q) => q.mode === 'FULL' &&
+    q.scopes.join() === 'https://www.googleapis.com/auth/script.external_request,https://www.googleapis.com/auth/script.scriptapp'), gas.scopeRequests);
+  gas.scopeRequests.length = 0;
+  G.testTeamsNotification();
+  check('testTeamsNotification requests the external_request scope first', gas.scopeRequests.length === 1 && gas.scopeRequests[0].scopes.join() === 'https://www.googleapis.com/auth/script.external_request', gas.scopeRequests);
   check('reminder trigger: remove leaves keepWarm', G.removeApprovalReminderTrigger() === 1 && gas.triggers.length === 1 && G.removeKeepWarmTrigger() === 1 && gas.triggers.length === 0);
 
   // test fixture: close every open permit directly in the sheet so only the ones below are pending

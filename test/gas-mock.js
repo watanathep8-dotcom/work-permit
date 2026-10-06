@@ -243,7 +243,10 @@ function createGas() {
     getHandlerFunction() { return this.fn; }
     getUniqueId() { return this.id; }
   }
+  const scopeRequests = []; // ScriptApp.requireScopes calls (no-op: the mock has every scope)
   const ScriptApp = {
+    AuthMode: { FULL: 'FULL', LIMITED: 'LIMITED', NONE: 'NONE' },
+    requireScopes(mode, scopes) { scopeRequests.push({ mode, scopes: (scopes || []).slice() }); },
     newTrigger(fn) {
       let minutes = null;
       const b = {
@@ -286,7 +289,7 @@ function createGas() {
   vm.createContext(context);
 
   return {
-    context, clock, stats, propStore, cacheStore, files, folders, spreadsheets, logs, triggers, fetches, fetchMode,
+    context, clock, stats, propStore, cacheStore, files, folders, spreadsheets, logs, triggers, fetches, fetchMode, scopeRequests,
     load(dir, order) {
       order.forEach((f) => vm.runInContext(fs.readFileSync(path.join(dir, f), 'utf8'), context, { filename: f }));
       // single clock source for the app (Code.gs now_()) follows the mock clock

@@ -230,6 +230,10 @@ var WP_REMINDER_HANDLER = 'checkApprovalReminders';
 var WP_REMINDER_MINUTES = 5;
 
 function installApprovalReminderTrigger() {
+  // Per-scope consent: the user may have unticked a scope earlier → force the consent dialog in the editor.
+  if (typeof ScriptApp !== 'undefined' && ScriptApp.requireScopes) {
+    ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, ['https://www.googleapis.com/auth/script.external_request', 'https://www.googleapis.com/auth/script.scriptapp']);
+  }
   var removed = removeApprovalReminderTrigger();
   ScriptApp.newTrigger(WP_REMINDER_HANDLER).timeBased().everyMinutes(WP_REMINDER_MINUTES).create();
   var result = { removed: removed, installed: 1, everyMinutes: WP_REMINDER_MINUTES, webhook: !!teamsWebhookUrl_() };
@@ -253,6 +257,11 @@ function removeApprovalReminderTrigger() {
  * sample card to the จป. channel and returns / logs the HTTP status only.
  */
 function testTeamsNotification() {
+  // Per-scope consent may leave "Connect to an external service" unticked (UrlFetchApp: "You do not have
+  // permission") → ask for it again in the editor.
+  if (typeof ScriptApp !== 'undefined' && ScriptApp.requireScopes) {
+    ScriptApp.requireScopes(ScriptApp.AuthMode.FULL, ['https://www.googleapis.com/auth/script.external_request']);
+  }
   if (!teamsWebhookUrl_()) {
     var skip = { ok: false, status: null, note: 'ยังไม่ได้ตั้งค่า Script Property "' + WP_PROP_TEAMS_WEBHOOK + '" — ไม่ได้ส่งการแจ้งเตือน' };
     Logger.log(JSON.stringify(skip));
