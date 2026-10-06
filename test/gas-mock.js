@@ -263,17 +263,30 @@ function createGas() {
     deleteTrigger(t) { const i = triggers.indexOf(t); if (i < 0) throw new Error('no such trigger'); triggers.splice(i, 1); }
   };
 
+  // ------------------------------------------------------------ UrlFetchApp (no network: records every call)
+  // fetches: [{url, params}]; fetchMode.code = HTTP status to answer, fetchMode.throws = message to throw
+  const fetches = [];
+  const fetchMode = { code: 202, throws: null };
+  const UrlFetchApp = {
+    fetch(url, params) {
+      fetches.push({ url: String(url), params: Object.assign({}, params || {}) });
+      if (fetchMode.throws) throw new Error(fetchMode.throws);
+      const code = fetchMode.code;
+      return { getResponseCode: () => code, getContentText: () => '' };
+    }
+  };
+
   const logs = [];
   const context = {
-    SpreadsheetApp, DriveApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp,
+    SpreadsheetApp, DriveApp, PropertiesService, CacheService, LockService, Utilities, ContentService, ScriptApp, UrlFetchApp,
     Logger: { log: (m) => logs.push(String(m)) },
-    console: { log: (...a) => logs.push('LOG ' + a.join(' ')), warn() {}, error: (...a) => logs.push('ERROR ' + a.join(' ')) },
+    console: { log: (...a) => logs.push('LOG ' + a.join(' ')), warn: (...a) => logs.push('WARN ' + a.join(' ')), error: (...a) => logs.push('ERROR ' + a.join(' ')) },
     JSON, Math, Date, Object, Array, String, Number, Boolean, RegExp, Error, encodeURIComponent, parseInt, parseFloat, isNaN
   };
   vm.createContext(context);
 
   return {
-    context, clock, stats, propStore, cacheStore, files, folders, spreadsheets, logs, triggers,
+    context, clock, stats, propStore, cacheStore, files, folders, spreadsheets, logs, triggers, fetches, fetchMode,
     load(dir, order) {
       order.forEach((f) => vm.runInContext(fs.readFileSync(path.join(dir, f), 'utf8'), context, { filename: f }));
       // single clock source for the app (Code.gs now_()) follows the mock clock

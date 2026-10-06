@@ -8,8 +8,8 @@
  * Files (all share one global scope in Apps Script):
  *   Code.gs     — router (doGet/doPost), response helpers, sheet "DB" helpers, utilities
  *   Auth.gs     — password hashing, login/logout/sessions (CacheService), user management
- *   Permits.gs  — permit actions (submit, track, list, view, review, decide, edit, delete, reset, files)
- *   Setup.gs    — setupSystem() (run once from the editor), keepWarm() + its 10-min trigger
+ *   Permits.gs  — permit actions (submit, track, list, view, review, decide, edit, delete, reset, files) + Teams notifications
+ *   Setup.gs    — setupSystem() (run once from the editor), keepWarm() + its 10-min trigger, testTeamsNotification()
  *   Data.gs     — reference data (companies, checklists, rules) — single source of truth
  *
  * Transport (same as our SDS project):

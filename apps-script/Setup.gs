@@ -204,3 +204,30 @@ function resetAdminPassword() {
     lock.releaseLock();
   }
 }
+
+// ---------------------------------------------------------------- Microsoft Teams (optional)
+/**
+ * Run from the Apps Script editor after setting Script Property TEAMS_WEBHOOK_URL
+ * (the first run asks to allow "Connect to an external service"). Sends one
+ * sample card to the จป. channel and returns / logs the HTTP status only.
+ */
+function testTeamsNotification() {
+  if (!teamsWebhookUrl_()) {
+    var skip = { ok: false, status: null, note: 'ยังไม่ได้ตั้งค่า Script Property "' + WP_PROP_TEAMS_WEBHOOK + '" — ไม่ได้ส่งการแจ้งเตือน' };
+    Logger.log(JSON.stringify(skip));
+    return skip;
+  }
+  var card = teamsCard_({
+    title: 'ทดสอบการแจ้งเตือน e-Work Permit', color: 'Good',
+    facts: [
+      ['สถานะ', 'เชื่อมต่อ Microsoft Teams สำเร็จ'],
+      ['ระบบ', WP_DATA.config.appName + ' (' + WP_DATA.config.formCode + ')'],
+      ['หมายเหตุ', 'ข้อความนี้ส่งจากฟังก์ชัน testTeamsNotification() — ไม่ใช่คำขอจริง']
+    ],
+    url: teamsSiteBase_() + '/admin/dashboard.html', urlTitle: 'เปิดแดชบอร์ด จป.'
+  });
+  var status = teamsSend_(card);
+  var result = { ok: status >= 200 && status < 300, status: status };
+  Logger.log(JSON.stringify(result));
+  return result;
+}

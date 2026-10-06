@@ -29,7 +29,8 @@
 4. **Project Settings → Script properties → Add script property**
    - `WP_INITIAL_ADMIN_PASSWORD` = รหัสผ่านเริ่มต้นของผู้ใช้ `admin` (อย่างน้อย 8 ตัวอักษร)
    - (ไม่บังคับ) `WP_RESET_PASSWORD` = รหัสผ่านสำหรับปุ่ม "รีเซ็ตข้อมูล" ในแดชบอร์ด จป. (ลบใบอนุญาต/logs ทั้งหมด และย้ายไฟล์แนบ/ลายเซ็นไปถังขยะ Drive; ผู้ใช้ยังอยู่) และใช้ยืนยันการ **แก้ไขข้อมูล (✏️)** / **ลบ (🗑)** ใบอนุญาตทีละใบ (ผิดรวมกัน 10 ครั้ง = ระงับ 15 นาที) — ไม่ตั้ง = ปุ่มรีเซ็ต/แก้ไข/ลบใช้ไม่ได้
-   - (ไม่บังคับ) `WP_SITE_URL` = URL ของ GitHub Pages เช่น `https://YOUR_USERNAME.github.io/work-permit` (ใช้สร้างลิงก์ติดตามแบบเต็มใน response)
+   - (ไม่บังคับ) `WP_SITE_URL` = URL ของ GitHub Pages เช่น `https://YOUR_USERNAME.github.io/work-permit` (ใช้สร้างลิงก์ติดตามแบบเต็มใน response และปุ่มในการ์ด Teams)
+   - (ไม่บังคับ) `TEAMS_WEBHOOK_URL` = URL ของ Teams Workflow สำหรับแจ้งเตือนช่อง จป. (ดูหัวข้อ "แจ้งเตือน Microsoft Teams" ด้านล่าง)
 5. เลือกฟังก์ชัน `setupSystem` → **Run** → อนุญาตสิทธิ์ Google Sheets และ Google Drive
    - ระบบจะสร้าง Spreadsheet "e-Work Permit (FM-MR-58) Database", โฟลเดอร์ Drive "e-Work Permit (FM-MR-58) Files" และผู้ใช้ `admin`
    - รันซ้ำได้ (ไม่สร้างซ้ำ/ไม่ลบข้อมูลเดิม) ถ้ายังไม่ได้ตั้ง `WP_INITIAL_ADMIN_PASSWORD` ระบบจะหยุดพร้อมข้อความแจ้ง
@@ -50,6 +51,21 @@
 - จุดประสงค์หลักคือ **ให้แคชอุ่นอยู่เสมอ** หน้าแรก/แดชบอร์ดจึงตอบเร็วขึ้น ส่วนอาการ "เปิดครั้งแรกช้า" (cold start ของ Web App ของ Google) **อาจดีขึ้นหรือไม่ก็ได้** — Google ไม่รับประกัน
 - หมายเหตุ: ค่าที่ keepWarm อุ่นไว้อยู่ได้ ~11 นาที ถ้าแก้ข้อมูลใน Google Sheet ด้วยมือโดยตรง (ไม่ผ่านระบบ) อาจเห็นค่าเดิมในแดชบอร์ดได้นานสุดประมาณ 10 นาที
 - ยกเลิก: รันฟังก์ชัน `removeKeepWarmTrigger`
+
+### (ไม่บังคับ) แจ้งเตือน Microsoft Teams ไปที่ช่องของ จป.
+
+ระบบส่งการ์ดแจ้งเตือน (Adaptive Card ภาษาไทย) ไปที่ช่อง Teams เมื่อ: มี**คำขอใบอนุญาตใหม่** (มีปุ่ม `เปิดพิจารณา` ไปหน้า `admin/view.html?id=…` ซึ่งต้องเข้าสู่ระบบ จป.), **อนุมัติ / ไม่อนุมัติ (พร้อมเหตุผล) / ปิดงาน**, **ลบใบอนุญาต** และ **รีเซ็ตข้อมูล** (ระบุว่าใครทำ) — การ์ดไม่มี token ติดตาม, ลิงก์ติดตาม, ลายเซ็น หรือไฟล์แนบ
+
+1. ใน Teams เปิดช่องของ จป. → **⋯ (More options) → Workflows** → เลือกเทมเพลต **"Post to a channel when a webhook request is received"** (โพสต์ไปยังช่องเมื่อได้รับคำขอ webhook)
+2. ตั้งชื่อ (เช่น `e-Work Permit`) → เลือก Team และ Channel → **Add workflow** → คัดลอก URL ที่ได้ (เก็บเป็นความลับ — ใครมี URL นี้ก็โพสต์เข้าช่องได้)
+3. Apps Script → **Project Settings → Script properties** → เพิ่ม `TEAMS_WEBHOOK_URL` = URL ที่คัดลอกมา (**ห้ามใส่ในโค้ดหรือ commit ลง Git**)
+4. ในตัวแก้ไขเลือกฟังก์ชัน `testTeamsNotification` → **Run** ครั้งเดียว → อนุญาตสิทธิ์ใหม่ *"Connect to an external service"* (`script.external_request`) → ควรเห็นการ์ดทดสอบในช่อง และ log แสดง `{"ok":true,"status":202}` (หรือ 200)
+5. **Deploy → Manage deployments → Edit → Version: New version** เพื่อให้ Web App ใช้โค้ดใหม่
+
+- ไม่ตั้ง/ลบค่า `TEAMS_WEBHOOK_URL` = ไม่ส่งแจ้งเตือน (ระบบทำงานปกติ)
+- การส่งเกิดหลังบันทึกข้อมูลสำเร็จเท่านั้น ถ้า Teams ล่ม/URL ผิด การยื่นคำขอหรือการอนุมัติยังสำเร็จตามปกติ — ดูสาเหตุได้ที่ **Executions** (log แสดงเฉพาะ HTTP status ไม่แสดง URL)
+- กดส่งคำขอซ้ำจากฟอร์มเดิม (ได้ใบเดิม) จะไม่ส่งการ์ดซ้ำ
+- ปุ่มในการ์ดใช้ `WP_SITE_URL` ถ้าตั้งไว้ ไม่เช่นนั้นใช้ `https://watanathep8-dotcom.github.io/work-permit`
 
 ## 2) ตั้งค่าหน้าเว็บ (GitHub Pages)
 

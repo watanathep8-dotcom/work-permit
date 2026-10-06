@@ -760,6 +760,177 @@ module.exports = function run() {
   check('keepWarm before setup: skipped quietly', G.keepWarm().ok === false);
   gas.propStore.WP_SPREADSHEET_ID = ssProp;
 
+  // ================================================================ Microsoft Teams notifications
+  {
+    check('teams: no webhook call while TEAMS_WEBHOOK_URL is unset (whole suite so far)', gas.fetches.length === 0, gas.fetches.length);
+    const HOOK = 'https://prod-00.example.logic.azure.com/workflows/abc123/triggers/manual/paths/invoke?sig=SECRET-SIG-xyz';
+    const raws = [];
+    const postT = (b) => { const raw = G.doPost({ postData: { contents: JSON.stringify(b) } }).getContent(); raws.push(raw); return JSON.parse(raw); };
+    const sent = () => gas.fetches.length;
+    const lastCard = () => JSON.parse(gas.fetches[gas.fetches.length - 1].params.payload);
+    const body = (msg) => msg.attachments[0].content.body;
+    const factsOf = (msg) => {
+      const fs_ = body(msg).find((b) => b.type === 'FactSet');
+      const o = {}; (fs_ ? fs_.facts : []).forEach((f) => { o[f.title] = f.value; }); return o;
+    };
+    const header = (msg) => body(msg)[0].items[0];
+    const cardOk = (msg) => msg.type === 'message' && msg.attachments.length === 1 &&
+      msg.attachments[0].contentType === 'application/vnd.microsoft.card.adaptive' && msg.attachments[0].contentUrl === null &&
+      msg.attachments[0].content.type === 'AdaptiveCard' && msg.attachments[0].content.version === '1.4' &&
+      msg.attachments[0].content.$schema === 'http://adaptivecards.io/schemas/adaptive-card.json' && Array.isArray(msg.attachments[0].content.actions);
+    const li = post({ action: 'login', username: 'admin', password: 'Brand-New-1' });
+    const ST = li.data.session, ME = li.data.user.fullname;
+
+    // property present but empty / whitespace → still nothing
+    gas.propStore.TEAMS_WEBHOOK_URL = '   ';
+    const e0 = postT(Object.assign(base(), { attachment: null }));
+    check('teams: empty TEAMS_WEBHOOK_URL → submit ok, no call', e0.ok && sent() === 0);
+    gas.propStore.TEAMS_WEBHOOK_URL = HOOK;
+    gas.fetchMode.code = 202; gas.fetchMode.throws = null;
+
+    // -- new permit
+    const RIDT = 'ef'.repeat(16);
+    const subT = () => Object.assign(base(), { rid: RIDT, work_types: ['hot', 'height'], worker_count: 99 });
+    const n0 = sent();
+    const T1 = postT(subT());
+    check('teams submit: ok + exactly one call', T1.ok && sent() === n0 + 1, T1);
+    const f0 = gas.fetches[gas.fetches.length - 1];
+    check('teams submit: POST JSON to the webhook, muteHttpExceptions', f0.url === HOOK && f0.params.method === 'post' &&
+      f0.params.contentType === 'application/json' && f0.params.muteHttpExceptions === true && typeof f0.params.payload === 'string', f0.params);
+    const c1 = lastCard(), F1 = factsOf(c1);
+    check('teams submit: Adaptive Card 1.4 message structure', cardOk(c1), c1);
+    check('teams submit: Good headline "มีคำขอใบอนุญาตใหม่ รอพิจารณา"', header(c1).text === 'มีคำขอใบอนุญาตใหม่ รอพิจารณา' && header(c1).color === 'Good' && header(c1).size === 'Large', header(c1));
+    check('teams submit: facts (no, company, type, work types, date+time, requester, company, phone, workers, area, owner)',
+      F1['เลขที่'] === T1.data.permit_no && F1['บริษัท (พื้นที่)'] === G.WP_DATA.companies[0] && F1['ประเภท'] === 'งานผู้รับเหมา' &&
+      F1['ลักษณะงาน'] === G.WP_DATA.workTypes.hot.label + ', ' + G.WP_DATA.workTypes.height.label &&
+      F1['วันที่ปฏิบัติงาน'] === '5 ต.ค. 2569 เวลา 08:00–17:00 น.' && F1['ผู้ขออนุญาต'] === 'นาย สมชาย ใจดี' &&
+      F1['บริษัท/หน่วยงานผู้ขอ'] === 'ผู้รับเหมา ก' && F1['เบอร์โทรผู้ขอ'] === '081-234-5678' && F1['จำนวนผู้ปฏิบัติงาน'] === '2 คน' &&
+      F1['สถานที่ปฏิบัติงาน'] === '=HYPERLINK("http://evil")' && F1['ผู้รับผิดชอบงาน'] === 'วิชัย · โทร 0899999999', F1);
+    const a1 = c1.attachments[0].content.actions;
+    check('teams submit: one "เปิดพิจารณา" button → admin view (default site)', a1.length === 1 && a1[0].type === 'Action.OpenUrl' && a1[0].title === 'เปิดพิจารณา' &&
+      a1[0].url === 'https://watanathep8-dotcom.github.io/work-permit/admin/view.html?id=' + T1.data.id, a1);
+    check('teams submit: Bangkok time footer', /^เวลา \d{1,2} \S+ 25\d\d \d\d:\d\d น\. \(เวลาประเทศไทย\)$/.test(body(c1)[body(c1).length - 1].text), body(c1));
+
+    // -- idempotent retry (cache replay before the lock) and race (replay inside the lock) send nothing
+    const T1b = postT(subT());
+    check('teams: retried submit (same rid) → same permit, no second card', T1b.ok && T1b.data.permit_no === T1.data.permit_no && sent() === n0 + 1);
+    const RIDT2 = '12'.repeat(16);
+    const lk = G.LockService.getScriptLock(), origTry = lk.tryLock;
+    let innerT = null;
+    lk.tryLock = function () { lk.tryLock = origTry; innerT = postT(Object.assign(base(), { rid: RIDT2 })); return origTry.apply(this, arguments); };
+    const outerT = postT(Object.assign(base(), { rid: RIDT2 }));
+    check('teams: rid race → one permit, exactly one card', innerT.ok && outerT.ok && innerT.data.permit_no === outerT.data.permit_no && sent() === n0 + 2, { innerT, outerT, sent: sent() });
+
+    // -- sent after the lock was released
+    let lockedAtFetch = null;
+    const origFetch = G.UrlFetchApp.fetch;
+    G.UrlFetchApp.fetch = function () { lockedAtFetch = gas.isLocked(); return origFetch.apply(this, arguments); };
+    const T2 = postT(Object.assign(base(), { attachment: null }));
+    G.UrlFetchApp.fetch = origFetch;
+    check('teams: card sent after the lock is released', T2.ok && lockedAtFetch === false, lockedAtFetch);
+
+    // -- WP_SITE_URL overrides the site base
+    gas.propStore.WP_SITE_URL = 'https://intranet.example.com/wp/';
+    const T3 = postT(Object.assign(base(), { attachment: null }));
+    check('teams: WP_SITE_URL overrides the button base', lastCard().attachments[0].content.actions[0].url === 'https://intranet.example.com/wp/admin/view.html?id=' + T3.data.id);
+    delete gas.propStore.WP_SITE_URL;
+
+    // -- decisions
+    let n = sent();
+    let r1 = postT({ action: 'decide', session: ST, id: T1.data.id, decision: 'approve', comment: 'ต้องมี Fire Watch', sign: SIG });
+    let c = lastCard();
+    check('teams approve: one Good card with decision + admin + note', r1.ok && sent() === n + 1 && cardOk(c) && header(c).color === 'Good' &&
+      header(c).text === 'อนุมัติใบอนุญาตแล้ว ' + T1.data.permit_no && factsOf(c)['ผลการพิจารณา'] === 'อนุมัติให้ปฏิบัติงาน' &&
+      factsOf(c)['โดย'] === ME && factsOf(c)['บริษัท (พื้นที่)'] === G.WP_DATA.companies[0] &&
+      JSON.stringify(body(c)).includes('ต้องมี Fire Watch') && c.attachments[0].content.actions[0].url.endsWith('/admin/view.html?id=' + T1.data.id), c);
+    check('teams approve: no signature / data URL in the card', !/data:image|base64/.test(gas.fetches[gas.fetches.length - 1].params.payload));
+    n = sent();
+    r1 = postT({ action: 'decide', session: ST, id: T1.data.id, decision: 'close' });
+    c = lastCard();
+    check('teams close: one card', r1.ok && sent() === n + 1 && factsOf(c)['ผลการพิจารณา'] === 'ปิดงาน' && header(c).color === 'Good', c);
+    n = sent();
+    r1 = postT({ action: 'decide', session: ST, id: T2.data.id, decision: 'reject', comment: 'เอกสาร\nไม่ครบ' });
+    c = lastCard();
+    check('teams reject: one Attention card with the reason', r1.ok && sent() === n + 1 && header(c).color === 'Attention' &&
+      factsOf(c)['ผลการพิจารณา'] === 'ไม่อนุมัติ' && body(c).some((b) => b.text === 'เหตุผลที่ไม่อนุมัติ') && body(c).some((b) => b.text === 'เอกสาร\nไม่ครบ'), c);
+    n = sent();
+    check('teams: refused decision sends nothing', !postT({ action: 'decide', session: ST, id: T2.data.id, decision: 'approve', sign: SIG }).ok && sent() === n);
+    check('teams: failed admin auth sends nothing', !postT({ action: 'decide', id: T3.data.id, decision: 'reject', comment: 'x' }).ok && sent() === n);
+    check('teams: save_review / update sends nothing', postT({ action: 'save_review', session: ST, id: T3.data.id, checklist: {} }).ok && sent() === n);
+
+    // -- long texts are limited
+    const longR = postT({ action: 'decide', session: ST, id: T3.data.id, decision: 'reject', comment: 'ย'.repeat(1990) });
+    c = lastCard();
+    const longest = Math.max(...body(c).filter((b) => b.text).map((b) => b.text.length));
+    check('teams: long reason truncated (≤ 1000 chars), facts ≤ 300', longR.ok && longest <= 1000 && Object.values(factsOf(c)).every((v) => v.length <= 300), longest);
+
+    // -- delete
+    n = sent();
+    const T4 = postT(Object.assign(base(), {})).data; // with attachment: 3 files
+    n = sent();
+    let rd = postT({ action: 'delete', session: ST, id: T4.id, resetPassword: RESET_PW });
+    c = lastCard();
+    check('teams delete: one Attention card: what + by whom', rd.ok && sent() === n + 1 && header(c).color === 'Attention' &&
+      header(c).text === 'ลบใบอนุญาต ' + T4.permit_no && factsOf(c)['ลบโดย'] === ME &&
+      factsOf(c)['สิ่งที่ถูกลบ'] === 'ใบอนุญาต 1 ใบ, ประวัติ 1 รายการ, ไฟล์ 3 ไฟล์ (ย้ายไปถังขยะ Drive)' && factsOf(c)['สถานะก่อนลบ'] === 'รออนุมัติ' &&
+      c.attachments[0].content.actions.length === 0, c);
+    n = sent();
+    check('teams: wrong reset password → no card', !postT({ action: 'delete', session: ST, id: T3.data.id, resetPassword: 'nope' }).ok && sent() === n);
+
+    // -- failures never change the answer or the data
+    gas.fetchMode.code = 500;
+    gas.logs.length = 0;
+    const T5 = postT(Object.assign(base(), { attachment: null }));
+    check('teams: HTTP 500 → submit still ok, permit stored', T5.ok && /^WP-/.test(T5.data.permit_no) && post({ action: 'permit', no: T5.data.permit_no, t: T5.data.token }).ok && sent() === n + 1);
+    check('teams: HTTP status logged with console.warn', gas.logs.some((l) => l === 'WARN Teams notification failed: HTTP 500'), gas.logs);
+    gas.fetchMode.code = 202;
+    gas.fetchMode.throws = 'Address unavailable: ' + HOOK;
+    const T6 = postT(Object.assign(base(), { attachment: null }));
+    const rr = postT({ action: 'decide', session: ST, id: T6.data.id, decision: 'reject', comment: 'x' });
+    check('teams: fetch exception → submit + decide still ok and stored', T6.ok && rr.ok && rr.data.status === 'rejected' && col(T6.data.id, 'status') === 'rejected', { T6, rr });
+    check('teams: request error logged without the URL', gas.logs.some((l) => l === 'WARN Teams notification failed: request error'));
+    gas.fetchMode.throws = null;
+    G.teamsCard_ = (() => { const orig = G.teamsCard_; return function () { G.teamsCard_ = orig; throw new Error('boom ' + HOOK); }; })();
+    const T7 = postT(Object.assign(base(), { attachment: null }));
+    check('teams: card build error → submit still ok', T7.ok && !gas.logs.some((l) => l.startsWith('ERROR')));
+    gas.propStore.TEAMS_WEBHOOK_URL = 'http://insecure.example.com/hook';
+    n = sent();
+    check('teams: non-https webhook is not called', postT(Object.assign(base(), { attachment: null })).ok && sent() === n);
+    gas.propStore.TEAMS_WEBHOOK_URL = HOOK;
+
+    // -- testTeamsNotification()
+    n = sent();
+    const tt = G.testTeamsNotification();
+    check('testTeamsNotification: sends one sample card, returns the status', tt.ok === true && tt.status === 202 && sent() === n + 1 && cardOk(lastCard()), tt);
+    gas.fetchMode.code = 404;
+    const tt2 = G.testTeamsNotification();
+    check('testTeamsNotification: non-2xx → ok false + status', tt2.ok === false && tt2.status === 404);
+    gas.fetchMode.code = 202;
+    delete gas.propStore.TEAMS_WEBHOOK_URL;
+    n = sent();
+    const tt3 = G.testTeamsNotification();
+    check('testTeamsNotification: unset → nothing sent, says so', tt3.ok === false && tt3.status === null && sent() === n && /TEAMS_WEBHOOK_URL/.test(tt3.note));
+    gas.propStore.TEAMS_WEBHOOK_URL = HOOK;
+
+    // -- reset_data (last: wipes the permits)
+    n = sent();
+    const before = pSheet.getLastRow() - 1;
+    const rs = postT({ action: 'reset_data', session: ST, resetPassword: RESET_PW });
+    c = lastCard();
+    check('teams reset_data: one Attention card with counts + by whom', rs.ok && sent() === n + 1 && header(c).color === 'Attention' &&
+      factsOf(c)['ใบอนุญาตที่ลบ'] === before + ' ใบ' && factsOf(c)['ประวัติที่ลบ'] === rs.data.logs_removed + ' รายการ' &&
+      factsOf(c)['ไฟล์ที่ย้ายไปถังขยะ Drive'] === rs.data.files_trashed + ' ไฟล์' && factsOf(c)['รีเซ็ตโดย'] === ME, { rs, c });
+
+    // -- privacy: no tracking token / token link anywhere in a card; webhook URL never in logs or responses
+    const tokens = [T1, T2, T3, T5, T6, T7].map((x) => x.data.token).concat(T4.token);
+    const payloads = gas.fetches.map((f) => f.params.payload).join('\n');
+    check('teams: no tracking token / track link / session in any payload', tokens.every((t) => t && !payloads.includes(t)) && !/track\.html|[?&]t=|"token"/.test(payloads) && !payloads.includes(ST));
+    check('teams: no attachment / signature in any payload', !/data:image|base64|_file"/.test(payloads));
+    check('teams: webhook URL / sig never in logs or API responses', !gas.logs.concat(raws).some((l) => l.includes('SECRET-SIG') || l.includes('logic.azure.com')));
+    check('teams: every card is valid JSON with header color Good|Attention', gas.fetches.every((f) => { const m = JSON.parse(f.params.payload); return cardOk(m) && /^(Good|Attention)$/.test(header(m).color); }));
+    delete gas.propStore.TEAMS_WEBHOOK_URL;
+  }
+
   // ================================================================ single-file paste (all .gs concatenated in order)
   const allGs = GS_ORDER.map((f) => fs.readFileSync(path.join(ROOT, 'apps-script', f), 'utf8')).join('\n');
   const tops = {};
@@ -777,6 +948,12 @@ module.exports = function run() {
   const sub1 = post1(Object.assign(base(), { attachment: null }));
   check('concatenated .gs: setup + login + submit + dashboard + keepWarm work', s1x.ok && sub1.ok && post1({ action: 'dashboard', session: s1x.data.session }).data.cnt.pending === 1 &&
     g1.context.keepWarm().ok, { s1x, sub1 });
+  check('concatenated .gs: no Teams call while unset', g1.fetches.length === 0);
+  g1.propStore.TEAMS_WEBHOOK_URL = 'https://example.invalid/hook';
+  const sub2 = post1(Object.assign(base(), { attachment: null }));
+  check('concatenated .gs: submit sends one Teams card, testTeamsNotification works', sub2.ok && g1.fetches.length === 1 &&
+    JSON.parse(g1.fetches[0].params.payload).attachments[0].content.body[0].items[0].text === 'มีคำขอใบอนุญาตใหม่ รอพิจารณา' &&
+    g1.context.testTeamsNotification().status === 202 && g1.fetches.length === 2, { sub2, n: g1.fetches.length });
 
   // ================================================================ forgotten admin password
   {

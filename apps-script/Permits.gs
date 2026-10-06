@@ -392,7 +392,7 @@ function apiSubmit_(d) {
     token: randomHex_(32), created_at: '', updated_at: ''
   });
 
-  var created = [];
+  var created = [], fresh = null, out;
   try {
     var tag = stampName_('png').replace(/\.png$/, '');
     row.requester_sign_file = saveDriveFile_(reqSign, 'image/png', tag + '_requester.png');
@@ -404,7 +404,7 @@ function apiSubmit_(d) {
       row.attachment_mime = att.mime;
       created.push(row.attachment_file);
     }
-    return withLock_(function () {
+    out = withLock_(function () {
       var ctx = { tables: {} };
       var t = table_(ctx, 'permits');
       var prev = submitReplay_(ctx, ridKey); // an identical try finished while this one uploaded its files
@@ -431,12 +431,16 @@ function apiSubmit_(d) {
           cache_().put(ridKey, JSON.stringify({ id: row.id, no: row.permit_no, th: sha256Hex_(row.token).substring(0, 32) }), WP_SUBMIT_RID_TTL);
         } catch (e) { console.warn('submit rid not cached'); }
       }
-      return submitOut_(ctx, t.rows[t.rows.length - 1], d); // the row as stored
+      fresh = t.rows[t.rows.length - 1]; // the row as stored
+      return submitOut_(ctx, fresh, d);
     });
   } catch (err) {
     created.forEach(trashDriveFile_);
     throw err;
   }
+  // Only a permit created by THIS call is announced (a replayed retry returned above / set no `fresh`).
+  if (fresh) notifyNewPermit_(fresh); // after the lock is released; never throws
+  return out;
 }
 
 /** api.php?action=track — permit no + requester phone → token. */
@@ -652,9 +656,9 @@ function apiDecide_(d, ctx) {
   var comment = str_(d.comment, 2000);
   if (['approve', 'reject', 'close'].indexOf(decision) < 0) fail_('คำสั่งไม่ถูกต้อง');
   var sign = decision === 'approve' ? checkSignature_(d.sign) : null;
-  var signFile = '';
+  var signFile = '', done = null, out;
   try {
-    return withLock_(function () {
+    out = withLock_(function () {
       relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
       var u = requireAdmin_(d, ctx);
       var t = table_(ctx, 'permits');
@@ -687,12 +691,15 @@ function apiDecide_(d, ctx) {
         writeRow_(t, p);
         addLog_(ctx, p.id, 'close', u.fullname, comment || 'ตรวจสอบหลังเสร็จงาน ปิดใบอนุญาต');
       }
+      done = { row: p, by: u.fullname };
       return { status: p.status };
     });
   } catch (err) {
     trashDriveFile_(signFile);
     throw err;
   }
+  notifyDecision_(done.row, decision, done.by, comment); // after the lock is released; never throws
+  return out;
 }
 
 // ---------------------------------------------------------------- RESET / DELETE / EDIT (admin + reset password)
@@ -740,20 +747,31 @@ function requireResetPassword_(p, what) {
 function apiDelete_(d, ctx) {
   requireAdmin_(d, ctx);
   requireResetPassword_(d, 'delete');
-  return withLock_(function () {
+  var gone = null, by = '';
+  var out = withLock_(function () {
     relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
     var u = requireAdmin_(d, ctx);
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
     if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
-    [p.attachment_file, p.requester_sign_file, p.owner_sign_file, p.approver_sign_file].forEach(trashDriveFile_);
+    var fileIds = [p.attachment_file, p.requester_sign_file, p.owner_sign_file, p.approver_sign_file];
+    fileIds.forEach(trashDriveFile_);
     var lt = table_(ctx, 'permit_logs');
-    deleteRows_(lt, lt.rows.filter(function (l) { return Number(l.permit_id) === Number(p.id); }));
+    var logs = lt.rows.filter(function (l) { return Number(l.permit_id) === Number(p.id); });
+    deleteRows_(lt, logs);
     deleteRows_(t, [p]);
     cache_().remove('wptf_' + p.permit_no); // a reused number must not inherit the tracking lockout
     console.log('WP delete permit ' + p.permit_no + ' (id ' + p.id + ') by ' + u.username + ' (' + u.fullname + ')');
+    gone = {
+      permit_no: p.permit_no, company: p.company, status: p.status, logs: logs.length,
+      requester: teamsRequester_(p) + (p.requester_company ? ' (' + p.requester_company + ')' : ''),
+      files: fileIds.filter(function (x) { return x; }).length
+    };
+    by = u.fullname;
     return { id: Number(p.id), permit_no: p.permit_no };
   });
+  notifyPermitDeleted_(gone, by); // after the lock is released; never throws
+  return out;
 }
 
 /** Cell equality; JSON cells compare by content (object key order ignored). */
@@ -830,7 +848,7 @@ function apiResetData_(p, ctx) {
   var u = requireAdmin_(p, ctx);
   requireResetPassword_(p, 'reset');
 
-  return withLock_(function () {
+  var out = withLock_(function () {
     relockCtx_(ctx); // re-read fresh data (unless nothing was written since) + re-check the session
     u = requireAdmin_(p, ctx);
     var pt = table_(ctx, 'permits');
@@ -875,5 +893,213 @@ function apiResetData_(p, ctx) {
     // so the reset is recorded in the Apps Script execution log.
     console.log('WP reset_data by ' + u.username + ' (' + u.fullname + '): ' + JSON.stringify(result));
     return result;
+  });
+  notifyResetData_(out, u.fullname); // after the lock is released; never throws
+  return out;
+}
+
+// ---------------------------------------------------------------- Microsoft Teams notifications
+/**
+ * Optional: posts an Adaptive Card to the จป. channel through a Teams
+ * "Workflows" webhook ("Post to a channel when a webhook request is received").
+ * The webhook URL lives ONLY in Script Property TEAMS_WEBHOOK_URL — unset/empty
+ * = no notification. Cards are sent after the write has succeeded and the lock
+ * is released; a failure is logged (HTTP status only, never the URL) and never
+ * changes the API response or the data. Cards never carry the tracking token,
+ * a token-bearing link, signatures or attachments.
+ */
+var WP_PROP_TEAMS_WEBHOOK = 'TEAMS_WEBHOOK_URL';
+var WP_SITE_URL_DEFAULT = 'https://watanathep8-dotcom.github.io/work-permit';
+var WP_TEAMS_TEXT_MAX = 300;   // chars per fact value
+var WP_TEAMS_NOTE_MAX = 1000;  // chars of a reason / note block
+var WP_THAI_MONTHS = ['', 'ม.ค.', 'ก.พ.', 'มี.ค.', 'เม.ย.', 'พ.ค.', 'มิ.ย.', 'ก.ค.', 'ส.ค.', 'ก.ย.', 'ต.ค.', 'พ.ย.', 'ธ.ค.'];
+
+/** Public site base (no trailing slash): Script Property WP_SITE_URL, else the GitHub Pages default. */
+function teamsSiteBase_() {
+  var site = String(props_().getProperty(WP_PROP_SITE_URL) || '').trim().replace(/\/+$/, '');
+  return /^https?:\/\//i.test(site) ? site : WP_SITE_URL_DEFAULT;
+}
+
+/** Admin view page of one permit (session-protected page — no token in the link). */
+function teamsAdminViewUrl_(id) {
+  return teamsSiteBase_() + '/admin/view.html?id=' + (Number(id) || 0);
+}
+
+/** "2026-10-05[ 09:30:00]" → "5 ต.ค. 2569[ 09:30 น.]" (same as WP.thaiDate in the browser). */
+function teamsThaiDate_(d, withTime) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}))?/.exec(String(d || ''));
+  if (!m) return '-';
+  var s = (+m[3]) + ' ' + WP_THAI_MONTHS[+m[2]] + ' ' + (+m[1] + 543);
+  if (withTime) s += ' ' + (m[4] || '00') + ':' + (m[5] || '00') + ' น.';
+  return s;
+}
+
+/** Single-line, length-limited text for a card. */
+function teamsText_(v, max) {
+  if (v === null || v === undefined || typeof v === 'object') v = '';
+  return str_(String(v).replace(/\s+/g, ' '), max || WP_TEAMS_TEXT_MAX);
+}
+
+function teamsWhen_(r) {
+  return teamsThaiDate_(r.work_date) + ' เวลา ' + String(r.time_from || '').substring(0, 5) + '–' + String(r.time_to || '').substring(0, 5) + ' น.';
+}
+
+function teamsRequester_(r) {
+  return [r.requester_title, r.requester_name].filter(function (x) { return str_(x) !== ''; }).join(' ');
+}
+
+function teamsWorkTypes_(r) {
+  return jdec_(r.work_types, []).map(function (k) {
+    return Object.prototype.hasOwnProperty.call(WP_DATA.workTypes, k) ? WP_DATA.workTypes[k].label : '';
+  }).filter(function (x) { return x; }).join(', ');
+}
+
+/**
+ * Adaptive Card message. o = {title, color ('Good'|'Attention'), facts: [[label, value]],
+ * note: {label, text}, url, urlTitle}. Empty fact values are left out.
+ */
+function teamsCard_(o) {
+  var attention = o.color === 'Attention';
+  var facts = (o.facts || []).map(function (f) { return { title: teamsText_(f[0], 60), value: teamsText_(f[1]) }; })
+    .filter(function (f) { return f.title !== '' && f.value !== ''; });
+  var body = [{
+    type: 'Container', style: attention ? 'attention' : 'good', bleed: true,
+    items: [
+      { type: 'TextBlock', text: teamsText_(o.title, 120), size: 'Large', weight: 'Bolder', color: attention ? 'Attention' : 'Good', wrap: true },
+      { type: 'TextBlock', text: WP_DATA.config.appName + ' (' + WP_DATA.config.formCode + ') · แจ้งเตือน จป.', size: 'Small', isSubtle: true, spacing: 'None', wrap: true }
+    ]
+  }];
+  if (facts.length) body.push({ type: 'FactSet', facts: facts, spacing: 'Medium' });
+  var note = o.note ? str_(o.note.text, WP_TEAMS_NOTE_MAX) : '';
+  if (note !== '') {
+    body.push({ type: 'TextBlock', text: teamsText_(o.note.label, 60), weight: 'Bolder', color: attention ? 'Attention' : 'Default', spacing: 'Medium', wrap: true });
+    body.push({ type: 'TextBlock', text: note, wrap: true, spacing: 'Small' });
+  }
+  body.push({ type: 'TextBlock', text: 'เวลา ' + teamsThaiDate_(nowStr_(), true) + ' (เวลาประเทศไทย)', size: 'Small', isSubtle: true, spacing: 'Medium', wrap: true });
+  var content = {
+    $schema: 'http://adaptivecards.io/schemas/adaptive-card.json',
+    type: 'AdaptiveCard', version: '1.4', body: body, actions: [], msteams: { width: 'Full' }
+  };
+  if (o.url) content.actions.push({ type: 'Action.OpenUrl', title: teamsText_(o.urlTitle || 'เปิดดู', 40), url: o.url });
+  return { type: 'message', attachments: [{ contentType: 'application/vnd.microsoft.card.adaptive', contentUrl: null, content: content }] };
+}
+
+function teamsWebhookUrl_() {
+  try { return String(props_().getProperty(WP_PROP_TEAMS_WEBHOOK) || '').trim(); } catch (e) { return ''; }
+}
+
+/**
+ * POSTs a message to TEAMS_WEBHOOK_URL. Returns the HTTP status, 0 on a request
+ * error, or null when not configured. Never throws; never logs the URL.
+ */
+function teamsSend_(message) {
+  var url = teamsWebhookUrl_();
+  if (!url) return null;
+  if (!/^https:\/\//i.test(url)) { console.warn('Teams notification skipped: ' + WP_PROP_TEAMS_WEBHOOK + ' is not an https URL'); return null; }
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      method: 'post', contentType: 'application/json', payload: JSON.stringify(message), muteHttpExceptions: true
+    });
+    var code = Number(res.getResponseCode()) || 0;
+    if (code < 200 || code >= 300) console.warn('Teams notification failed: HTTP ' + code);
+    return code;
+  } catch (e) {
+    console.warn('Teams notification failed: request error'); // the exception text may contain the URL
+    return 0;
+  }
+}
+
+/** Builds + sends a card; anything that goes wrong is swallowed (the action already succeeded). */
+function notifyTeams_(build) {
+  try {
+    if (!teamsWebhookUrl_()) return null; // not configured: no work at all
+    return teamsSend_(build());
+  } catch (e) {
+    console.warn('Teams notification skipped: card error');
+    return null;
+  }
+}
+
+/** New permit request (submit) — never called for a replayed / retried submit. */
+function notifyNewPermit_(r) {
+  return notifyTeams_(function () {
+    var owner = [str_(r.owner_name), r.owner_phone ? 'โทร ' + r.owner_phone : ''].filter(function (x) { return x !== ''; }).join(' · ');
+    return teamsCard_({
+      title: 'มีคำขอใบอนุญาตใหม่ รอพิจารณา', color: 'Good',
+      facts: [
+        ['เลขที่', r.permit_no],
+        ['บริษัท (พื้นที่)', r.company],
+        ['ประเภท', WP_DATA.permitTypes[r.permit_type] || r.permit_type],
+        ['ลักษณะงาน', teamsWorkTypes_(r)],
+        ['วันที่ปฏิบัติงาน', teamsWhen_(r)],
+        ['ผู้ขออนุญาต', teamsRequester_(r)],
+        ['บริษัท/หน่วยงานผู้ขอ', r.requester_company],
+        ['เบอร์โทรผู้ขอ', r.requester_phone],
+        ['จำนวนผู้ปฏิบัติงาน', (Number(r.worker_count) || 0) + ' คน'],
+        ['สถานที่ปฏิบัติงาน', r.location],
+        ['ผู้รับผิดชอบงาน', owner]
+      ],
+      url: teamsAdminViewUrl_(r.id), urlTitle: 'เปิดพิจารณา'
+    });
+  });
+}
+
+var WP_TEAMS_DECISIONS = {
+  approve: { title: 'อนุมัติใบอนุญาตแล้ว', color: 'Good', label: 'อนุมัติให้ปฏิบัติงาน', note: 'หมายเหตุ' },
+  reject: { title: 'ไม่อนุมัติใบอนุญาต', color: 'Attention', label: 'ไม่อนุมัติ', note: 'เหตุผลที่ไม่อนุมัติ' },
+  close: { title: 'ปิดงานใบอนุญาตแล้ว', color: 'Good', label: 'ปิดงาน', note: 'หมายเหตุ' }
+};
+
+/** approve / reject / close by an admin. */
+function notifyDecision_(r, decision, byName, comment) {
+  return notifyTeams_(function () {
+    var h = WP_TEAMS_DECISIONS[decision];
+    return teamsCard_({
+      title: h.title + ' ' + r.permit_no, color: h.color,
+      facts: [
+        ['เลขที่', r.permit_no],
+        ['บริษัท (พื้นที่)', r.company],
+        ['ผู้ขออนุญาต', teamsRequester_(r) + (r.requester_company ? ' (' + r.requester_company + ')' : '')],
+        ['วันที่ปฏิบัติงาน', teamsWhen_(r)],
+        ['ผลการพิจารณา', h.label],
+        ['โดย', byName]
+      ],
+      note: comment ? { label: h.note, text: comment } : null,
+      url: teamsAdminViewUrl_(r.id), urlTitle: 'ดูใบอนุญาต'
+    });
+  });
+}
+
+/** Admin deleted one permit. info = {permit_no, company, requester, status, logs, files}. */
+function notifyPermitDeleted_(info, byName) {
+  return notifyTeams_(function () {
+    var st = WP_DATA.status[info.status];
+    return teamsCard_({
+      title: 'ลบใบอนุญาต ' + info.permit_no, color: 'Attention',
+      facts: [
+        ['เลขที่', info.permit_no],
+        ['บริษัท (พื้นที่)', info.company],
+        ['ผู้ขออนุญาต', info.requester],
+        ['สถานะก่อนลบ', st ? st.label : info.status],
+        ['สิ่งที่ถูกลบ', 'ใบอนุญาต 1 ใบ, ประวัติ ' + info.logs + ' รายการ, ไฟล์ ' + info.files + ' ไฟล์ (ย้ายไปถังขยะ Drive)'],
+        ['ลบโดย', byName]
+      ]
+    });
+  });
+}
+
+/** Admin reset_data. res = apiResetData_ result. */
+function notifyResetData_(res, byName) {
+  return notifyTeams_(function () {
+    return teamsCard_({
+      title: 'รีเซ็ตข้อมูลใบอนุญาตทั้งหมด', color: 'Attention',
+      facts: [
+        ['ใบอนุญาตที่ลบ', res.permits_removed + ' ใบ'],
+        ['ประวัติที่ลบ', res.logs_removed + ' รายการ'],
+        ['ไฟล์ที่ย้ายไปถังขยะ Drive', res.files_trashed + ' ไฟล์'],
+        ['ผู้ใช้งาน จป.', 'ไม่ถูกลบ'],
+        ['รีเซ็ตโดย', byName]
+      ]
+    });
   });
 }
