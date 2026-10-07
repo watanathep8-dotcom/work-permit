@@ -202,6 +202,10 @@
       ระบบบันทึกประวัติ "แก้ไขข้อมูล" พร้อมชื่อผู้แก้ไขและรายการที่เปลี่ยน · วันที่/เวลาที่แก้ไขจะใช้คำนวณการหมดอายุใหม่ทันที</div>`;
 
     const setRadio = (name, v) => $$(`input[name=${name}]`).forEach(i => { i.checked = i.value === v; });
+    if (p.company && !$$('input[name=company]').some(i => i.value === p.company)) {
+      // older permit: its company is no longer in the list — offer it so the edit can keep it
+      $('#company-seg').insertAdjacentHTML('beforeend', `<label><input type="radio" name="company" value="${WP.esc(p.company)}"><span><i class="fa-solid fa-building-flag"></i>${WP.esc(p.company)}</span></label>`);
+    }
     setRadio('company', p.company);
     setRadio('permit_type', p.permit_type);
     setRadio('requester_title', p.requester_title);

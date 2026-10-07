@@ -367,7 +367,9 @@ function cleanRequestFields_(d, keep) {
     return typeof t === 'string' && Object.prototype.hasOwnProperty.call(WT, t) && a.indexOf(t) === i;
   });
   if (!types.length) fail_('กรุณาเลือกลักษณะงาน');
-  if (WP_DATA.companies.indexOf(d.company) < 0) fail_('บริษัทไม่ถูกต้อง');
+  // Editing an older permit may keep a company that is no longer offered.
+  var keptCompany = keep && String(keep.company || '') !== '' && d.company === keep.company;
+  if (WP_DATA.companies.indexOf(d.company) < 0 && !keptCompany) fail_('บริษัทไม่ถูกต้อง');
   if (!Object.prototype.hasOwnProperty.call(WP_DATA.permitTypes, String(d.permit_type))) fail_('ประเภทไม่ถูกต้อง');
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(d.work_date || ''))) fail_('วันที่ไม่ถูกต้อง');
   ['time_from', 'time_to'].forEach(function (k) { if (!/^\d{2}:\d{2}$/.test(String(d[k] || ''))) fail_('เวลาไม่ถูกต้อง'); });

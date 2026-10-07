@@ -60,7 +60,7 @@ module.exports = function run() {
   // ================================================================ public GET
   check('GET ping', get({ action: 'ping' }).ok);
   const cfg = get({ action: 'config' });
-  check('GET config returns reference data', cfg.ok && cfg.data.companies.length === 3 && cfg.data.workTypes.confined.form === 'FM-EMR-46');
+  check('GET config returns reference data', cfg.ok && cfg.data.companies.length === 2 && cfg.data.companies.indexOf('บริษัท เทพวัฒนา จำกัด') < 0 && cfg.data.workTypes.confined.form === 'FM-EMR-46');
   check('GET stats', get({ action: 'stats' }).data.total === 0);
   check('GET on POST-only action refused', !get({ action: 'permits' }).ok);
   check('unknown action', post({ action: 'nope' }).code === 'NOT_FOUND');
@@ -377,6 +377,14 @@ module.exports = function run() {
     ep.job_detail === 'ซ่อมท่อ' && ep.worker_count === 3 && ep.workers.map((w) => w.name).join() === 'ก,ข,ค', ep);
   check('edit: formula-like text round-trips', ep && ep.location === '+SUM(1,2)');
   check('edit: sections sanitized like submit', ep && ep.checklist.h1 === true && !('junk' in ep.checklist) && ep.loto.length === 1 && ep.loto[0].item === 'MDB-2' && ep.confined === null, ep);
+  {
+    // A company removed from the list stays valid only for edits of permits that already use it.
+    const OLD = 'บริษัท เทพวัฒนา จำกัด';
+    const tryClean = (keep) => { try { G.cleanRequestFields_(Object.assign(editBody(), { company: OLD }), keep); return true; } catch (e) { return e.message; } };
+    check('company no longer offered: allowed when an edit keeps it', tryClean({ company: OLD }) === true, tryClean({ company: OLD }));
+    check('company no longer offered: rejected on submit', /บริษัท/.test(String(tryClean(null))));
+    check('company no longer offered: rejected when an edit switches to it', /บริษัท/.test(String(tryClean({ company: G.WP_DATA.companies[0] }))));
+  }
   check('edit: status / permit_no / token / approvals / signatures / created_at untouched', keepCols.every((k, i) => col(P4.id, k) === keepBefore[i]) && ep.status === 'pending' && !ep.approver_name, keepCols.map((k) => col(P4.id, k)));
   check('edit: expiry recomputed from new date/time (overnight)', ep && ep.end_ts === BKK('2026-10-08T04:00:00') / 1000 && ep.es === 'pending');
   const editLog = e4 && e4.logs[e4.logs.length - 1];
