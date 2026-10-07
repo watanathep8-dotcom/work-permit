@@ -70,11 +70,24 @@
     return h;
   };
 
+  // Checklists of the paper form (FM-MR-58). Values of an older checklist (no _v) are
+  // upgraded first (wpUpgradeChecklist_, Data.gs) — renamed PPE options, retired items
+  // kept read-only under "อื่นๆ" (_legacy) and sent back unchanged on save.
+  WP.upgradeChecklist = v => (typeof window.wpUpgradeChecklist_ === 'function' ? window.wpUpgradeChecklist_(JSON.parse(JSON.stringify(v || {}))) : (v || {}));
+  WP.orderTypes = types => {
+    const ord = WP.data.checklistOrder || [];
+    return types.slice().sort((a, b) => (ord.indexOf(a) + 1 || 99) - (ord.indexOf(b) + 1 || 99));
+  };
+  WP.legacyHTML = (values, k) => {
+    const L = (values && values._legacy && values._legacy[k]) || [];
+    return L.length ? `<div class="cl-legacy full"><i class="fa-solid fa-clock-rotate-left"></i> <b>${WP.esc((WP.data.checklistLegacy || {}).note || 'อื่นๆ')}:</b> ${L.map(WP.esc).join(' · ')}</div>` : '';
+  };
+
   /** render_timeline() */
   WP.timelineHTML = logs => {
     const map = {
       submit: ['ยื่นใบขออนุญาต', ''], approve: ['จป. อนุมัติ', ''], reject: ['ไม่อนุมัติ', 'reject'], close: ['ปิดงาน', 'close'], review: ['บันทึกการตรวจสอบ', ''], edit: ['จป. แก้ไขข้อมูล', ''],
-      assign_area: ['ผู้รับผิดชอบงานระบุเจ้าของพื้นที่', ''], area_approve: ['เจ้าของพื้นที่อนุมัติ', ''], resp_approve: ['ผู้รับผิดชอบงานอนุมัติ', ''], reassign: ['จป. มอบหมายผู้อนุมัติใหม่', '']
+      assign_area: ['ผู้รับผิดชอบงานระบุเจ้าของพื้นที่', ''], area_approve: ['เจ้าของพื้นที่อนุมัติ', ''], resp_approve: ['ผู้รับผิดชอบงานอนุมัติ', ''], reassign: ['จป. มอบหมายผู้อนุมัติใหม่', ''], inspect: ['ลงชื่อการตรวจสอบ', '']
     };
     return '<div class="timeline">' + (logs || []).map((l, i) => {
       const [t, c] = map[l.action] || [l.action, ''];

@@ -60,7 +60,7 @@ module.exports = function run() {
   // ================================================================ public GET
   check('GET ping', get({ action: 'ping' }).ok);
   const cfg = get({ action: 'config' });
-  check('GET config returns reference data', cfg.ok && cfg.data.companies.length === 2 && cfg.data.workTypes.confined.form === 'FM-EMR-46');
+  check('GET config returns reference data', cfg.ok && cfg.data.companies.length === 3 && cfg.data.workTypes.confined.form === 'FM-EMR-46');
   check('GET stats', get({ action: 'stats' }).data.total === 0);
   check('GET on POST-only action refused', !get({ action: 'permits' }).ok);
   check('unknown action', post({ action: 'nope' }).code === 'NOT_FOUND');
@@ -146,7 +146,9 @@ module.exports = function run() {
   check('permit by token', v1 && v1.permit_no === P1.permit_no && v1.status === 'pending' && v1.es === 'pending', r);
   check('work types filtered', v1 && v1.work_types.join() === 'hot,electric,confined');
   check('workers cleaned', v1 && v1.worker_count === 2 && v1.workers.length === 2);
-  check('checklist sanitized', v1 && !('zzz' in v1.checklist) && v1.checklist.h8.sel.join() === 'ถุงมือ' && v1.checklist.cs4_12_t === 'อื่นๆ' && v1.checklist.e6.on === true);
+  // no _v = a checklist from a page cached before the paper-form update → upgraded (old "ถุงมือ" of h8 has no equivalent → Other)
+  check('checklist sanitized', v1 && !('zzz' in v1.checklist) && v1.checklist.h8.sel.join() === '' && v1.checklist.h8.other === 'x, ถุงมือ' &&
+    v1.checklist.cs4_12_t === 'อื่นๆ' && v1.checklist.e6.on === true && v1.checklist._v === G.WP_DATA.config.checklistVersion, v1 && v1.checklist);
   check('loto sanitized', v1 && v1.loto.length === 1 && !('hacker' in v1.loto[0]) && v1.loto[0].item === 'MDB-1');
   check('confined cleaned (5 gas, 6 entries, 3 renew)', v1 && v1.confined.gas.length === 5 && v1.confined.entries.length === 6 && v1.confined.renew.length === 3 && v1.confined.close.done === true);
   check('token not echoed in permit', v1 && !('token' in v1));
@@ -804,7 +806,7 @@ module.exports = function run() {
       F1['เลขที่'] === T1.data.permit_no && F1['บริษัท (พื้นที่)'] === G.WP_DATA.companies[0] && F1['ประเภท'] === 'งานผู้รับเหมา' &&
       F1['ลักษณะงาน'] === G.WP_DATA.workTypes.hot.label + ', ' + G.WP_DATA.workTypes.height.label &&
       F1['วันที่ปฏิบัติงาน'] === '5 ต.ค. 2569 เวลา 08:00–17:00 น.' && F1['ผู้ขออนุญาต'] === 'นาย สมชาย ใจดี' &&
-      F1['บริษัท/หน่วยงานผู้ขอ'] === 'ผู้รับเหมา ก' && F1['เบอร์โทรผู้ขอ'] === '081-234-5678' && F1['จำนวนผู้ปฏิบัติงาน'] === '2 คน' &&
+      F1['บริษัท/หน่วยงานผู้ขอ'] === 'ผู้รับเหมา ก' && F1['เบอร์โทรผู้ขอ'] === '081-234-5678' && F1['จำนวนผู้ปฏิบัติงาน'] === '99 คน' &&
       F1['สถานที่ปฏิบัติงาน'] === '=HYPERLINK("http://evil")' && F1['ผู้รับผิดชอบงาน'] === 'วิชัย · โทร 0899999999', F1);
     const a1 = c1.attachments[0].content.actions;
     check('teams submit: one "เปิดพิจารณา" button → admin view (default site)', a1.length === 1 && a1[0].type === 'Action.OpenUrl' && a1[0].title === 'เปิดพิจารณา' &&

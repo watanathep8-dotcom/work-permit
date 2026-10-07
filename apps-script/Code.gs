@@ -104,6 +104,7 @@ function routes_() {
     approvers: apiApprovers_,
     assign_area: apiAssignArea_,
     stage_decide: apiStageDecide_,
+    inspect_sign: apiInspectSign_,   // area owner / responsible: own inspection cells of an approved permit
     // จป. (role safety) only
     reassign: apiReassign_,
     poll: apiPoll_,

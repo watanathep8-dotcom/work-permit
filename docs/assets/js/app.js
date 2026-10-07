@@ -184,12 +184,14 @@
   // ---------- Checklist renderer ----------
   WP.renderChecklist = (box, defs, types, values = {}, readonly = false) => {
     const ro = readonly ? 'disabled' : '';
+    values = WP.upgradeChecklist(values);
+    box._legacy = values._legacy || null;
     let html = '';
-    types.forEach((k, si) => {
+    WP.orderTypes(types).forEach((k, si) => {
       const d = defs[k]; if (!d) return;
       html += `<div class="cl-section" style="--wc:${d.color};animation-delay:${si * 90}ms" data-type="${k}">
         <div class="cl-head"><span class="wt-ic"><i class="fa-solid ${d.icon}"></i></span>
-          <div><h3>${d.label}</h3>${d.note ? `<small>${d.note}</small>` : ''}</div>
+          <div><h3>${d.title || d.label}</h3>${d.note ? `<small>${d.note}</small>` : ''}</div>
           <span class="cl-prog"><i class="fa-solid fa-list-check"></i> <b class="cl-n">0</b>/<span class="cl-t">0</span></span></div>
         <div class="cl-body">`;
       d.items.forEach(it => {
@@ -212,10 +214,10 @@
           const sel = (v && v.sel) || [], oth = (v && v.other) || '';
           html += `<div class="full"><div class="cl-group" style="padding-left:14px">${it.label}</div><div class="chips" data-ppe="${it.id}">` +
             it.options.map(o => `<label class="chip"><input type="checkbox" value="${o}" ${sel.includes(o) ? 'checked' : ''} ${ro}><span><i class="fa-solid fa-circle-check"></i>${o}</span></label>`).join('') +
-            (it.noOther ? '' : `<input class="input" data-ppe-other="${it.id}" value="${WP.esc(oth)}" placeholder="อื่นๆ (Other)" ${ro}>`) + `</div></div>`;
+            (it.noOther ? '' : `<input class="input" data-ppe-other="${it.id}" value="${WP.esc(oth)}" placeholder="Other (ระบุ)" ${ro}>`) + `</div></div>`;
         }
       });
-      html += `</div></div>`;
+      html += WP.legacyHTML(values, k) + `</div></div>`;
     });
     box.innerHTML = html || `<div class="empty"><i class="fa-solid fa-clipboard-question"></i>กรุณาเลือกลักษณะงานในขั้นตอนที่ 1 ก่อน</div>`;
     const upd = sec => {
@@ -226,7 +228,8 @@
     $$('.cl-section', box).forEach(sec => { upd(sec); sec.addEventListener('change', () => upd(sec)); });
   };
   WP.collectChecklist = box => {
-    const out = {};
+    const out = { _v: WP.data.config.checklistVersion || 1 };
+    if (box._legacy) out._legacy = box._legacy;
     $$('input[type=checkbox][data-id]', box).forEach(c => {
       if (c.dataset.kind === 'ct') out[c.dataset.id] = { on: c.checked, text: $(`[data-ct="${c.dataset.id}"]`, box).value.trim() };
       else out[c.dataset.id] = c.checked;

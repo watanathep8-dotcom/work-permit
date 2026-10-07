@@ -78,12 +78,26 @@ function checklistItemIndex_() {
   return idx;
 }
 
-/** Keeps only known checklist ids with the value shape the UI produces. */
+/**
+ * Keeps only known checklist ids with the value shape the UI produces.
+ * Older checklists (no `_v`, sent by a cached page or stored before the
+ * FM-MR-58 paper-form update) are first upgraded by wpUpgradeChecklist_ (Data.gs);
+ * the result always carries `_v` (current version) and, for upgraded rows, the
+ * read-only `_legacy` texts { workType: [text, ...] }.
+ */
 function cleanChecklist_(raw) {
   var out = {};
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) raw = {};
+  raw = wpUpgradeChecklist_(raw);
   var idx = checklistItemIndex_();
+  var lg = (raw._legacy && typeof raw._legacy === 'object' && !Array.isArray(raw._legacy)) ? raw._legacy : {};
+  var legacy = {};
+  workTypeKeys_().forEach(function (k) {
+    var arr = (Array.isArray(lg[k]) ? lg[k] : []).map(function (x) { return str_(x, 300); }).filter(function (x) { return x !== ''; }).slice(0, 20);
+    if (arr.length) legacy[k] = arr;
+  });
   Object.keys(raw).forEach(function (key) {
+    if (key === '_v' || key === '_legacy') return;
     var v = raw[key];
     var it = idx[key];
     if (!it) {
@@ -106,6 +120,8 @@ function cleanChecklist_(raw) {
       default: break; // group / info carry no value
     }
   });
+  if (Object.keys(legacy).length) out._legacy = legacy;
+  out._v = WP_DATA.config.checklistVersion;
   return out;
 }
 
@@ -358,6 +374,9 @@ function cleanRequestFields_(d, keep) {
   var req = { requester_name: 'ชื่อผู้ขออนุญาต', requester_company: 'บริษัท/หน่วยงาน', requester_phone: 'เบอร์โทรศัพท์', owner_name: 'ผู้รับผิดชอบงานโครงการ', location: 'สถานที่ปฏิบัติงาน', job_detail: 'รายละเอียดงาน' };
   Object.keys(req).forEach(function (k) { if (str_(d[k]) === '') fail_('กรุณากรอก ' + req[k]); });
   var workers = cleanWorkers_(d.workers);
+  // "จำนวน ___ คน โดยมีรายชื่อตามเอกสารแนบ": the stated head count may exceed the typed
+  // rows (names in the attached file), never be lower than them
+  var count = Math.max(workers.length, Math.min(9999, Math.floor(Number(d.worker_count)) || 0));
   var given = function (k) { return !keep || (d[k] !== undefined && d[k] !== null); };
   var confined = '';
   if (types.indexOf('confined') >= 0) {
@@ -369,7 +388,7 @@ function cleanRequestFields_(d, keep) {
     work_date: d.work_date, time_from: d.time_from, time_to: d.time_to,
     requester_title: str_(d.requester_title, 20), requester_name: str_(d.requester_name, 150),
     requester_company: str_(d.requester_company, 200), requester_phone: str_(d.requester_phone, 30),
-    worker_count: String(workers.length), workers: JSON.stringify(workers),
+    worker_count: String(count), workers: JSON.stringify(workers),
     owner_name: str_(d.owner_name, 150), owner_phone: str_(d.owner_phone, 30),
     job_detail: str_(d.job_detail, 5000), location: str_(d.location),
     checklist: given('checklist') ? JSON.stringify(cleanChecklist_(d.checklist)) : JSON.stringify(cleanChecklist_(jdec_(keep.checklist, {}))),
@@ -678,11 +697,15 @@ function apiSaveReview_(d, ctx) {
     if (Array.isArray(ins)) ins = {};
     var din = (d.inspections && typeof d.inspections === 'object') ? d.inspections : {};
     var stamp = nowStr_();
+    var wf = !!Number(p.responsible_id);
     Object.keys(WP_DATA.inspectRoles).forEach(function (rk) {
       var role = (din[rk] && typeof din[rk] === 'object') ? din[rk] : {};
       if (!ins[rk] || typeof ins[rk] !== 'object' || Array.isArray(ins[rk])) ins[rk] = {};
       Object.keys(WP_DATA.inspectStages).forEach(function (sk) {
         if (rk === 'safety' && sk === 'permit') return; // the approval stamp is set by decide (approve) only
+        // approval workflow: the "การอนุญาตทำงาน" cells of rows 1–2 are the stage approvals
+        // (area owner / responsible signatures) — not typed by the จป.
+        if (wf && sk === 'permit') return;
         var name = str_(role[sk] && role[sk].name, 150);
         var old = ins[rk][sk];
         if (name === '') { delete ins[rk][sk]; return; }
@@ -943,6 +966,14 @@ function apiStageDecide_(d, ctx) {
       }
       if (st === 'assign') fail_('กรุณาระบุเจ้าของพื้นที่ก่อน (ขั้นตอนนี้ไม่มีการลงนาม)');
       if (!sign) fail_('กรุณาลงลายมือชื่อ' + roleLabel);
+      // the area owner / responsible tick the checklist of the paper form ("สำหรับผู้รับผิดชอบงาน/
+      // ผู้รับผิดชอบพื้นที่/ผู้ตรวจสอบงาน") when they approve; the จป. reviews it last (optional)
+      if (d.checklist && typeof d.checklist === 'object' && !Array.isArray(d.checklist)) {
+        var cl = JSON.stringify(cleanChecklist_(d.checklist));
+        toCell_(cl, 'checklist');
+        p.checklist = cl;
+      }
+      if (Array.isArray(d.loto) && jdec_(p.work_types, []).indexOf('electric') >= 0) p.loto = JSON.stringify(cleanLoto_(d.loto));
       signFile = saveDriveFile_(sign, 'image/png', p.permit_no + '_' + st + '_' + randomHex_(8) + '.png');
       var next;
       if (st === 'area') {
@@ -969,6 +1000,50 @@ function apiStageDecide_(d, ctx) {
   if (done.reject) notifyDecision_(done.row, 'reject', done.by, comment, done.stage);
   else notifyStage_(done.row, done.next, false);
   return out;
+}
+
+/**
+ * Approvals table of the paper form, rows 1–2: the assigned area owner (row
+ * "owner" = 1. เจ้าของพื้นที่โครงการ) and the assigned responsible (row
+ * "contractor" = 2. ผู้รับผิดชอบงาน) sign their OWN inspection cells
+ * (ก่อนเริ่มงาน / ระหว่างทำงาน / หลังเสร็จงาน) of an approved permit, stamped with
+ * their account name + time. An already signed cell is never overwritten (the
+ * จป. may still correct any cell with save_review, as before). `row` is needed
+ * only when the caller holds both assignments.
+ */
+var WP_SELF_INSPECT = { owner: { idField: 'area_owner_id', role: 'area_owner' }, contractor: { idField: 'responsible_id', role: 'responsible' } };
+function inspectRowsOf_(u, p) {
+  return Object.keys(WP_SELF_INSPECT).filter(function (rk) {
+    var x = WP_SELF_INSPECT[rk];
+    return Number(p[x.idField]) === Number(u.id) && hasRole_(u, x.role);
+  });
+}
+function apiInspectSign_(d, ctx) {
+  requireUser_(d, ctx);
+  var sk = String(d.stage || '');
+  if (['before', 'during', 'after'].indexOf(sk) < 0) fail_('คำสั่งไม่ถูกต้อง');
+  return withLock_(function () {
+    relockCtx_(ctx);
+    var u = requireUser_(d, ctx);
+    var x = wfPermit_(d, ctx, u), p = x.p;
+    var rows = inspectRowsOf_(u, p);
+    var rk = d.row ? String(d.row) : (rows.length === 1 ? rows[0] : '');
+    if (!rows.length || rows.indexOf(rk) < 0) fail_('ลงชื่อการตรวจสอบได้เฉพาะแถวของผู้ที่ได้รับมอบหมาย (เจ้าของพื้นที่ / ผู้รับผิดชอบงาน) เท่านั้น', 'FORBIDDEN');
+    if (p.status !== 'approved') fail_('ลงชื่อการตรวจสอบได้เฉพาะใบอนุญาตที่อนุมัติแล้ว (ระหว่างปฏิบัติงาน)', 'CONFLICT');
+    var ins = jdec_(p.inspections, {});
+    if (!ins || typeof ins !== 'object' || Array.isArray(ins)) ins = {};
+    if (!ins[rk] || typeof ins[rk] !== 'object' || Array.isArray(ins[rk])) ins[rk] = {};
+    if (ins[rk][sk] && ins[rk][sk].name) fail_('ช่องนี้ลงชื่อแล้วโดย ' + ins[rk][sk].name + ' — กรุณาโหลดหน้าใหม่', 'CONFLICT');
+    var stamp = nowStr_();
+    ins[rk][sk] = { name: u.fullname, at: stamp };
+    var note = str_(d.note, 500);
+    if (note !== '') ins[rk].note = note;
+    p.inspections = JSON.stringify(ins);
+    p.updated_at = stamp;
+    writeRow_(x.t, p);
+    addLog_(ctx, p.id, 'inspect', u.fullname, WP_DATA.inspectStages[sk] + ' — ' + WP_DATA.inspectRoles[rk]);
+    return { inspections: ins, updated_at: p.updated_at };
+  });
 }
 
 /**
@@ -1144,7 +1219,11 @@ function apiUpdatePermit_(d, ctx) {
     if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
     checkBase_(p, d);
     var f = cleanRequestFields_(d, p);
-    var changed = Object.keys(WP_REQUEST_FIELDS).filter(function (k) { return !sameValue_(p[k], f[k]); });
+    var changed = Object.keys(WP_REQUEST_FIELDS).filter(function (k) {
+      // a checklist stored before the paper-form update compares in its upgraded form
+      var cur = k === 'checklist' ? JSON.stringify(cleanChecklist_(jdec_(p[k], {}))) : p[k];
+      return !sameValue_(cur, f[k]);
+    });
     if (!changed.length) return { changed: [], permit: permitOut_(p, true) };
     changed.forEach(function (k) { p[k] = f[k]; });
     p.updated_at = nowStr_();

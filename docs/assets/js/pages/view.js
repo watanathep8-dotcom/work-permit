@@ -31,19 +31,42 @@
   const people = ap.ok ? ap.data : { responsible: [], area_owner: [] };
   const opts = (list, cur) => '<option value="">— เลือก —</option>' + list.map(x => `<option value="${+x.id}" ${+x.id === +cur ? 'selected' : ''}>${E(x.name)}</option>`).join('');
 
+  // stage approvers (เจ้าของพื้นที่ / ผู้รับผิดชอบงาน) tick the checklist when they approve (paper form:
+  // "สำหรับผู้รับผิดชอบงาน/ผู้รับผิดชอบพื้นที่/ผู้ตรวจสอบงาน"); the จป. reviews it last
+  const clEditable = editable || myStage === 'area' || myStage === 'resp';
+  // approvals table rows 1–2 of an approved permit: the assigned area owner / responsible sign their own inspection cells
+  const selfRows = p.status === 'approved' ? [['owner', 'area_owner', p.area_owner_id], ['contractor', 'responsible', p.responsible_id]]
+    .filter(([, role, uid]) => uid && +uid === myId && WP.hasRole(role)).map(([rk]) => rk) : [];
+  // "การอนุญาตทำงาน (ผู้อนุมัติ)": workflow stage approvals (rows 1–2) and the จป. approval (row 3)
+  const done = ['approved', 'closed'].includes(p.status);
+  const permitCell = rk => {
+    if (rk === 'owner' && p.workflow) return { name: p.area_approved_at ? p.area_owner_name : '', at: p.area_approved_at, img: sg.area, wait: stage === 'area' };
+    if (rk === 'contractor' && p.workflow) return { name: p.resp_approved_at ? p.responsible_name : '', at: p.resp_approved_at, img: sg.resp, wait: stage === 'resp' };
+    if (rk === 'safety') { const c = (ins.safety || {}).permit; return { name: c ? c.name : (done ? p.approver_name : ''), at: c ? c.at : (done ? p.approved_at : ''), img: done ? sg.approver : '', wait: stage === 'safety' }; }
+    return null; // legacy permit without workflow: typed by the จป. as before
+  };
   const inspRows = Object.entries(D.inspectRoles).map(([rk, rl]) => `
             <tr><td class="role">${E(rl)}</td>
               ${Object.keys(D.inspectStages).map(sk => {
+                const pc = sk === 'permit' ? permitCell(rk) : null;
+                if (pc) {
+                  return `<td><div class="insp-cell ${pc.name ? 'filled' : ''}">
+                  ${pc.img ? `<img class="sig-img sm" src="${pc.img}">` : (pc.name ? '<i class="fa-solid fa-stamp stamp"></i>' : '')}
+                  <div class="insp-name">${pc.name ? E(pc.name) : `<span class="muted">${pc.wait ? 'รออนุมัติ' : '—'}</span>`}</div>
+                  <small>${pc.at ? WP.thaiDate(pc.at, true) : '&nbsp;'}</small></div></td>`;
+                }
                 const c = (ins[rk] || {})[sk];
-                const enabled = editable && !(rk === 'safety' && sk === 'permit');
+                const enabled = editable;
+                const mine = !c && sk !== 'permit' && selfRows.includes(rk);
                 return `<td><div class="insp-cell ${c ? 'filled' : ''}">
                   ${c ? '<i class="fa-solid fa-stamp stamp"></i>' : ''}
-                  <input data-r="${rk}" data-s="${sk}" value="${E(c ? c.name : '')}" placeholder="ลงชื่อ..." ${enabled ? '' : 'disabled'}>
+                  <input data-r="${rk}" data-s="${sk}" value="${E(c ? c.name : '')}" placeholder="${enabled ? 'ลงชื่อ...' : ''}" ${enabled ? '' : 'disabled'}>
                   <small>${c ? WP.thaiDate(c.at, true) : '&nbsp;'}</small>
                   ${editable && rk === 'safety' && sk !== 'permit' && !c ? `<button type="button" class="btn sm ghost mt1 sign-me" data-r="${rk}" data-s="${sk}"><i class="fa-solid fa-signature"></i> ลงชื่อฉัน</button>` : ''}
+                  ${mine && !editable ? `<button type="button" class="btn sm mt1 self-sign" data-r="${rk}" data-s="${sk}"><i class="fa-solid fa-signature"></i> ลงชื่อตรวจสอบ</button>` : ''}
                 </div></td>`;
               }).join('')}
-              <td><div class="insp-cell"><input data-r="${rk}" data-note="1" value="${E((ins[rk] || {}).note || '')}" placeholder="..." ${editable ? '' : 'disabled'}></div></td>
+              <td><div class="insp-cell"><input data-r="${rk}" data-note="1" value="${E((ins[rk] || {}).note || '')}" placeholder="..." ${editable ? '' : 'disabled'}>${(() => { const c = rk === 'owner' ? p.area_comment : rk === 'contractor' ? p.resp_comment : (done ? p.approve_comment : ''); return c ? `<small>“${E(c)}”</small>` : ''; })()}</div></td>
             </tr>`).join('');
 
   // ---------- approval workflow cards ----------
@@ -161,8 +184,8 @@
 
     <div class="card mb2 reveal">
       <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-list-check ic-beat"></i></span><h3>รายการตรวจสอบความปลอดภัย</h3><span class="spacer"></span>
-        ${editable ? '<small class="muted"><i class="fa-solid fa-pen"></i> จป. ปรับแก้ได้ตามหน้างาน</small>' : ''}</div>
-      <div class="card-b" id="checklist"></div>
+        ${editable ? '<small class="muted"><i class="fa-solid fa-pen"></i> จป. ปรับแก้ได้ตามหน้างาน</small>' : clEditable ? '<small class="muted"><i class="fa-solid fa-pen"></i> ทำเครื่องหมายตามหน้างาน — บันทึกพร้อมการอนุมัติ</small>' : ''}</div>
+      <div class="card-b"><div class="hint mb2"><i class="fa-solid fa-user-shield"></i> ${E(D.reviewNote)}</div><div id="checklist"></div></div>
     </div>
 
     ${types.includes('electric') ? `<div class="card mb2 reveal">
@@ -178,6 +201,7 @@
     <div class="card mb2 reveal">
       <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-clipboard-user ic-bob"></i></span><h3>การอนุญาต & การตรวจสอบ (ก่อน / ระหว่าง / หลัง)</h3></div>
       <div class="card-b" style="overflow-x:auto">
+        <p class="text2 mt0 small-stmt">${D.approvalStatement.map(E).join(' ')}</p>
         <table class="insp" id="insp">
           <thead><tr><th></th>${Object.values(D.inspectStages).map(sl => `<th>${E(sl)}</th>`).join('')}<th>หมายเหตุ</th></tr></thead>
           <tbody>${inspRows}</tbody>
@@ -210,8 +234,8 @@
   WP.bindAttachment(root, { id: p.id });
 
   // ---------- same client logic as view.php ----------
-  WP.renderChecklist($('#checklist'), WP.defs, P.types, P.checklist, !P.editable);
-  if ($('#loto')) WP.renderLoto($('#loto'), P.loto, !P.editable);
+  WP.renderChecklist($('#checklist'), WP.defs, P.types, P.checklist, !clEditable);
+  if ($('#loto')) WP.renderLoto($('#loto'), P.loto, !clEditable);
   if ($('#cs-box')) WP.renderConfined($('#cs-box'), P.confined, !P.editable, true);
 
   const collect = () => {
@@ -231,6 +255,15 @@
     const i = $(`#insp input[data-r="${b.dataset.r}"][data-s="${b.dataset.s}"]`); i.value = P.me;
     i.closest('.insp-cell').classList.add('filled'); b.remove();
   });
+  $$('.self-sign').forEach(b => b.addEventListener('click', WP.busy(async () => {
+    const lbl = D.inspectStages[b.dataset.s];
+    const c = await Swal.fire({ icon: 'question', title: 'ลงชื่อ' + lbl + '?', html: `${E(D.inspectRoles[b.dataset.r])}<br><b>${E(P.me)}</b><br><small>ระบบประทับเวลาให้อัตโนมัติ</small>`, showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-signature"></i> ลงชื่อ', cancelButtonText: 'ยกเลิก' });
+    if (!c.isConfirmed) return;
+    const x = await WP.api('inspect_sign', { id: P.id, stage: b.dataset.s, row: b.dataset.r });
+    if (!x.ok) return Swal.fire({ icon: 'error', title: 'ลงชื่อไม่สำเร็จ', text: x.msg });
+    await Swal.fire({ icon: 'success', title: 'ลงชื่อเรียบร้อย', timer: 1200, showConfirmButton: false });
+    location.reload();
+  })));
   $('#btn-save')?.addEventListener('click', WP.busy(async () => {
     try { await save(); Swal.fire({ icon: 'success', title: 'บันทึกเรียบร้อย', timer: 1300, showConfirmButton: false }).then(() => location.reload()); }
     catch (e) { Swal.fire({ icon: 'error', title: 'บันทึกไม่สำเร็จ', text: e.message }); }
@@ -295,7 +328,8 @@
     const c = await Swal.fire({ icon: 'question', title: 'ยืนยันอนุมัติ?', html: `คำขอจะถูกส่งต่อให้ <b>${next}</b> พิจารณาในขั้นถัดไป`, showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-circle-check"></i> อนุมัติ', cancelButtonText: 'ยกเลิก' });
     if (!c.isConfirmed) return;
     Swal.fire({ title: 'กำลังบันทึก...', showConfirmButton: false, allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-    const x = await WP.api('stage_decide', { id: P.id, decision: 'approve', comment: $('#wf-comment').value, sign: wfPad.toData(), base: P.base });
+    const x = await WP.api('stage_decide', { id: P.id, decision: 'approve', comment: $('#wf-comment').value, sign: wfPad.toData(), base: P.base,
+      checklist: WP.collectChecklist($('#checklist')), ...($('#loto') ? { loto: WP.collectLoto($('#loto')) } : {}) });
     if (x.ok) WP.celebrate();
     await after(x, 'อนุมัติเรียบร้อย — ส่งต่อให้' + next + 'แล้ว');
   }));

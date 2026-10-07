@@ -21,6 +21,10 @@
   $('#rules').innerHTML = li(D.safetyRules);
   $('#agreement').innerHTML = li(D.safetyAgreement);
   $('#remarks').innerHTML = li(D.remarks);
+  $('#waste-title').textContent = D.wasteRules.title;
+  $('#waste').innerHTML = li(D.wasteRules.items);
+  $('#agree-text').textContent = D.agreementAck;
+  $('#review-note').textContent = D.reviewNote;
   $('#max-mb').textContent = D.config.uploadMaxMb;
 
   // ผู้รับผิดชอบงาน (approval workflow): public list of id + name. Empty list = no

@@ -38,7 +38,12 @@
     $$('tr', wb).forEach((tr, i) => tr.firstElementChild.textContent = i + 1);
     const n = $$('tr', wb).filter(tr => $('input', tr).value.trim()).length;
     $('#worker-count').textContent = n;
+    // "จำนวน ___ คน": follows the typed names until edited by hand, never below them
+    const wt = form.worker_count;
+    wt.min = n;
+    if (!wt.dataset.manual || (+wt.value || 0) < n) wt.value = n;
   };
+  form.worker_count.addEventListener('input', () => { form.worker_count.dataset.manual = '1'; });
   const addWorker = (focus = true, w = {}) => {
     const tr = document.createElement('tr'); tr.className = 'row-in';
     tr.innerHTML = `<td></td><td><input class="input" data-w="name" placeholder="ชื่อ - นามสกุล"></td><td><input class="input" data-w="role" placeholder="เช่น ช่างเชื่อม / หัวหน้างาน"></td><td><input class="input" data-w="idno" placeholder="(ถ้ามี)"></td>
@@ -158,6 +163,7 @@
     requester_company: form.requester_company.value.trim(), requester_phone: form.requester_phone.value.trim(),
     owner_name: form.owner_name.value.trim(), owner_phone: form.owner_phone.value.trim(),
     location: form.location.value.trim(), job_detail: form.job_detail.value.trim(),
+    worker_count: Math.max(+form.worker_count.value || 0, 0),
     workers: $$('tr', wb).map(tr => { const o = {}; $$('input', tr).forEach(i => o[i.dataset.w] = i.value.trim()); return o; }).filter(w => w.name),
     checklist: WP.collectChecklist($('#checklist')),
     loto: types().includes('electric') && $('#loto table') ? WP.collectLoto($('#loto')) : [],
@@ -206,6 +212,7 @@
     ['requester_name', 'requester_company', 'requester_phone', 'owner_name', 'owner_phone', 'location', 'job_detail'].forEach(k => { form[k].value = p[k] || ''; });
     (p.workers || []).forEach(w => addWorker(false, w));
     if (!(p.workers || []).length) addWorker(false);
+    if ((+p.worker_count || 0) > (p.workers || []).length) { form.worker_count.value = +p.worker_count; form.worker_count.dataset.manual = '1'; }
     initial = { checklist: p.checklist || {}, loto: p.loto || [], confined: p.confined || {} };
     buildChecklist(); // render now so the sections are saved even if step 3 is never opened
     $('#submit').disabled = false;

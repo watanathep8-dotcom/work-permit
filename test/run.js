@@ -1,5 +1,6 @@
 /* Test runner: node test/run.js
  *  1. backend end-to-end tests (mocked Apps Script services) + approval workflow / roles / reminders
+ *     + paper-form (FM-MR-58) checklist model / legacy rows / approvals table
  *  2. single-source-of-truth check: docs/assets/js/data.js === apps-script/Data.gs
  *  3. syntax check of every frontend JS file and every inline <script> in docs/
  *  4. appsscript.json manifest sanity
@@ -26,6 +27,11 @@ const wf = require('./workflow.test.js')();
 passed += wf.passed;
 failures.push(...wf.failures);
 console.log(`approval workflow e2e: ${wf.passed} passed, ${wf.failures.length} failed (${Date.now() - tw} ms)`);
+const tf = Date.now();
+const fm = require('./form.test.js')();
+passed += fm.passed;
+failures.push(...fm.failures);
+console.log(`paper form (FM-MR-58) data model e2e: ${fm.passed} passed, ${fm.failures.length} failed (${Date.now() - tf} ms)`);
 
 // 2 ---------------------------------------------------------------------------
 const gsData = fs.readFileSync(path.join(ROOT, 'apps-script', 'Data.gs'), 'utf8');

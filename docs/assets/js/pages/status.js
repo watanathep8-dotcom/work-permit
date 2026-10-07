@@ -29,6 +29,7 @@
     if (l.action === 'area_approve') return Object.assign({}, l, { by_name: R.area_owner });
     if (l.action === 'resp_approve') return Object.assign({}, l, { by_name: R.responsible });
     if (l.action === 'reassign') return Object.assign({}, l, { by_name: 'จป.', note: 'มอบหมายผู้อนุมัติใหม่' });
+    if (l.action === 'inspect') { const [what, who] = String(l.note || '').split(' — '); return Object.assign({}, l, { by_name: String(who || '').replace(/^\d+\.\s*/, ''), note: what }); }
     if (l.action === 'reject' && m) return Object.assign({}, l, { by_name: m[1], note: m[2] });
     return l;
   });
