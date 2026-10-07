@@ -76,14 +76,53 @@
     drop.addEventListener('drop', e => { if (e.dataTransfer.files.length) { fileIn.files = e.dataTransfer.files; showFile(); } });
   }
 
+  // ---------- Checklist item files (เอกสารรับรองที่เกี่ยวข้อง / อื่นๆ; optional, new requests only) ----------
+  // itemFiles[itemId] = [File]; only the items shown for the selected work types are sent.
+  const itemFiles = {};
+  const MB = 1048576, mb = n => (n / MB).toFixed(2) + ' MB';
+  const fileExt = n => (String(n).includes('.') ? String(n).split('.').pop() : '').toLowerCase();
+  const sentItemFiles = () => $$('[data-att-list]').flatMap(ul => (itemFiles[ul.dataset.attList] || []).map(file => ({ item: ul.dataset.attList, file })));
+  const totalBytes = () => sentItemFiles().reduce((s, x) => s + x.file.size, 0) + (fileIn.files[0] ? fileIn.files[0].size : 0);
+  const tooBig = () => totalBytes() > CFG.requestMaxMb * MB;
+  const bigMsg = () => `ไฟล์แนบทั้งหมดรวมกันต้องไม่เกิน ${CFG.requestMaxMb}MB (ตอนนี้ ${mb(totalBytes())}) — กรุณาลดจำนวนหรือขนาดไฟล์`;
+  const renderFiles = id => {
+    const ul = $(`[data-att-list="${id}"]`); if (!ul) return;
+    ul.innerHTML = (itemFiles[id] || []).map((f, i) => `<li><i class="fa-solid ${fileExt(f.name) === 'pdf' ? 'fa-file-pdf' : 'fa-file-image'}"></i><span class="nm" title="${WP.esc(f.name)}">${WP.esc(f.name)}</span><span class="sz">${mb(f.size)}</span><button type="button" class="rm" data-i="${i}" title="ลบไฟล์" aria-label="ลบไฟล์ ${WP.esc(f.name)}"><i class="fa-solid fa-xmark"></i></button></li>`).join('');
+  };
+  $('#checklist').addEventListener('click', e => {
+    const b = e.target.closest('.cl-att-list .rm'); if (!b) return;
+    const id = b.closest('[data-att-list]').dataset.attList;
+    (itemFiles[id] || []).splice(+b.dataset.i, 1);
+    renderFiles(id);
+  });
+  $('#checklist').addEventListener('change', e => {
+    const inp = e.target.closest('input[type=file][data-att]'); if (!inp) return;
+    const id = inp.dataset.att, list = itemFiles[id] = itemFiles[id] || [], bad = [];
+    Array.from(inp.files).forEach(f => {
+      if (!CFG.itemFileExt.includes(fileExt(f.name))) bad.push(`${f.name}: ชนิดไฟล์ไม่รองรับ (PDF หรือรูปภาพเท่านั้น)`);
+      else if (f.size > CFG.uploadMaxMb * MB) bad.push(`${f.name}: ใหญ่เกิน ${CFG.uploadMaxMb}MB`);
+      else if (!f.size) bad.push(`${f.name}: ไฟล์ว่าง`);
+      else if (list.length >= CFG.itemFileMax) bad.push(`${f.name}: แนบได้ไม่เกิน ${CFG.itemFileMax} ไฟล์ต่อรายการ`);
+      else if (list.some(x => x.name === f.name && x.size === f.size)) bad.push(`${f.name}: แนบไฟล์นี้แล้ว`);
+      else {
+        list.push(f);
+        if (tooBig()) { list.pop(); bad.push(`${f.name}: ${bigMsg()}`); }
+      }
+    });
+    inp.value = '';
+    renderFiles(id);
+    if (bad.length) Swal.fire({ icon: 'warning', title: 'แนบไฟล์ไม่ได้บางไฟล์', html: bad.map(WP.esc).join('<br>') });
+  });
+
   // ---------- Steps ----------
-  const types = () => $$('input[name=work_types]:checked').map(c => c.value);
+  const types =() => $$('input[name=work_types]:checked').map(c => c.value);
   const buildChecklist = () => {
     const t = types(), key = t.join(',');
     if (key === lastTypes) return;
     const prev = lastTypes ? WP.collectChecklist($('#checklist')) : (initial ? initial.checklist : {});
     lastTypes = key;
-    WP.renderChecklist($('#checklist'), WP.defs, t, prev);
+    WP.renderChecklist($('#checklist'), WP.defs, t, prev, false, { attach: !editId });
+    $$('[data-att-list]').forEach(ul => renderFiles(ul.dataset.attList)); // files picked before a work-type change
     const hasLoto = t.includes('electric');
     $('#loto-card').classList.toggle('hide', !hasLoto);
     if (hasLoto && !$('#loto table')) WP.renderLoto($('#loto'), initial ? initial.loto : []);
@@ -250,6 +289,7 @@
     const f = fileIn.files[0];
     if (f && f.size > CFG.uploadMaxMb * 1048576) return Swal.fire({ icon: 'error', title: `ไฟล์ใหญ่เกิน ${CFG.uploadMaxMb}MB` });
     if (f && !CFG.uploadExt.includes(f.name.split('.').pop().toLowerCase())) return Swal.fire({ icon: 'error', title: 'ชนิดไฟล์ไม่รองรับ', text: 'PDF/JPG/PNG/XLS/DOC เท่านั้น' });
+    if (tooBig()) return Swal.fire({ icon: 'error', title: 'ไฟล์แนบรวมกันใหญ่เกินไป', text: bigMsg() });
 
     await WP.respReady;
     if (workflow() && !form.responsible_id.value) {
@@ -268,12 +308,12 @@
     });
     if (!ok.isConfirmed) return;
     Swal.fire({ title: 'กำลังส่งข้อมูล...', html: '<i class="fa-solid fa-paper-plane fa-2x ic-float" style="color:var(--lime)"></i>', showConfirmButton: false, allowOutsideClick: false });
-    if (f) {
-      try {
-        const url = await new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.onerror = () => rej(fr.error); fr.readAsDataURL(f); });
-        data.attachment = { name: f.name, mimeType: f.type || '', base64: String(url).slice(String(url).indexOf(',') + 1) };
-      } catch { return Swal.fire({ icon: 'error', title: 'อ่านไฟล์แนบไม่สำเร็จ' }); }
-    }
+    const b64 = file => new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).slice(String(fr.result).indexOf(',') + 1)); fr.onerror = () => rej(fr.error); fr.readAsDataURL(file); });
+    try {
+      if (f) data.attachment = { name: f.name, mimeType: f.type || '', base64: await b64(f) };
+      const sent = sentItemFiles();
+      if (sent.length) data.item_files = await Promise.all(sent.map(async x => ({ item: x.item, name: x.file.name, base64: await b64(x.file) })));
+    } catch { return Swal.fire({ icon: 'error', title: 'อ่านไฟล์แนบไม่สำเร็จ' }); }
     const r = await WP.api('submit', Object.assign(data, { with_permit: true, rid }));
     if (!r.ok) return Swal.fire({ icon: 'error', title: 'ส่งไม่สำเร็จ', text: r.msg });
     try { localStorage.removeItem(DKEY); } catch { }

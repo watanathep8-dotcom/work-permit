@@ -52,6 +52,16 @@ var WP_SCHEMA = {
     'last_reminder_at', 'reminder_count'],
   permit_logs: ['id', 'permit_id', 'action', 'by_name', 'note', 'created_at']
 };
+/**
+ * Columns added after the first deployments. setupSystem() creates them, but a live
+ * sheet may not have re-run it: reading never requires them (a missing cell reads as
+ * empty) and the code that writes one creates it first (ensureColumn_).
+ *  - permits.item_files: JSON [{fid, item, name, mime, size, file}] — files attached to the
+ *    checklist items "เอกสารรับรองที่เกี่ยวข้อง" / "อื่นๆ" (the Drive id `file` never leaves the server)
+ */
+var WP_SCHEMA_OPTIONAL = {
+  permits: ['item_files']
+};
 
 // ---------------------------------------------------------------- errors
 function WpError(message, code) {
@@ -386,6 +396,17 @@ function toCell_(v, column) {
 
 function rowValues_(t, obj) {
   return t.headers.map(function (h) { return toCell_(obj[h], h); });
+}
+
+/** Adds header `h` after the last column when the live sheet lacks it (call under the lock). */
+function ensureColumn_(t, h) {
+  if (t.headers.indexOf(h) >= 0) return;
+  var sh = t.sheet, col = t.headers.length + 1;
+  if (sh.getMaxColumns() < col) sh.insertColumnsAfter(sh.getMaxColumns(), col - sh.getMaxColumns());
+  var cell = sh.getRange(1, col, 1, 1);
+  cell.setNumberFormat('@');
+  cell.setValues([[h]]);
+  t.headers.push(h);
 }
 
 function appendRow_(t, obj) {

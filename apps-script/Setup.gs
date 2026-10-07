@@ -43,7 +43,7 @@ function setupSystem() {
       createdSpreadsheet = true;
     }
     Object.keys(WP_SCHEMA).forEach(function (name, i) {
-      var headers = WP_SCHEMA[name];
+      var headers = WP_SCHEMA[name].concat(WP_SCHEMA_OPTIONAL[name] || []);
       var sh = ss.getSheetByName(name);
       if (!sh) {
         var first = ss.getSheets()[0];

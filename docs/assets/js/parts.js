@@ -54,6 +54,13 @@
         <dt>รายละเอียดงาน</dt><dd style="white-space:pre-line">${E(p.job_detail)}</dd>`;
     if (p.has_attachment) h += `
         <dt>เอกสารแนบ</dt><dd><a class="btn sm ghost" href="#" data-attachment><i class="fa-solid fa-paperclip"></i> ${E(p.attachment_name)}</a></dd>`;
+    // files of the checklist items (เอกสารรับรองที่เกี่ยวข้อง / อื่นๆ): staff open them, the requester sees names only
+    const groups = WP.itemFileGroups(p);
+    if (groups.length) h += `
+        <dt>ไฟล์แนบรายการตรวจสอบ</dt><dd><ul class="item-files">` + groups.map(g => `<li><span class="it-lbl">${E(g.label)}</span><span class="chips-f">` +
+        g.files.map(f => opts.staff
+          ? `<a class="btn sm ghost" href="#" data-item-file="${E(f.fid)}" title="เปิด / ดาวน์โหลด"><i class="fa-solid fa-paperclip"></i> ${E(f.name)}</a>`
+          : `<span class="fchip"><i class="fa-solid fa-paperclip"></i> ${E(f.name)}</span>`).join('') + '</span></li>').join('') + '</ul></dd>';
     h += `
       </dl>
     </div>
@@ -163,5 +170,18 @@
     }
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
-  WP.bindAttachment = (root, params) => root.querySelectorAll('[data-attachment]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); WP.openAttachment(params); }));
+  WP.bindAttachment = (root, params) => {
+    root.querySelectorAll('[data-attachment]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); WP.openAttachment(params); }));
+    root.querySelectorAll('[data-item-file]').forEach(a => a.addEventListener('click', e => { e.preventDefault(); WP.openAttachment(Object.assign({}, params, { fid: a.dataset.itemFile })); }));
+  };
+  /** permit.item_files grouped by checklist item, in form order: [{item, label, files}] (older permits: []). */
+  WP.itemFileGroups = p => {
+    const files = Array.isArray(p.item_files) ? p.item_files : [], out = [];
+    if (!files.length) return out;
+    WP.orderTypes(Object.keys(D.workTypes)).forEach(k => D.workTypes[k].items.forEach(it => {
+      const fs = files.filter(f => f.item === it.id);
+      if (fs.length) out.push({ item: it.id, label: `${D.workTypes[k].short || D.workTypes[k].label} · ${it.label}`, files: fs });
+    }));
+    return out;
+  };
 })();

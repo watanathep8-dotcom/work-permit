@@ -22,6 +22,21 @@ var WP_DATA = {
       "doc",
       "docx"
     ],
+    "itemFileExt": [
+      "pdf",
+      "jpg",
+      "jpeg",
+      "png",
+      "gif",
+      "webp",
+      "bmp",
+      "tif",
+      "tiff",
+      "heic",
+      "heif"
+    ],
+    "itemFileMax": 5,
+    "requestMaxMb": 25,
     "defaultPosition": "เจ้าหน้าที่ความปลอดภัย (จป.วิชาชีพ)",
     "checklistVersion": 2,
     "formTitle": "ใบขออนุญาตปฏิบัติงาน",
@@ -86,12 +101,14 @@ var WP_DATA = {
         },
         {
           "id": "g2doc",
+          "attach": true,
           "type": "text",
           "label": "2. เอกสารรับรองที่เกี่ยวข้อง",
           "half": true
         },
         {
           "id": "g3",
+          "attach": true,
           "type": "text",
           "label": "3. อื่นๆ (ระบุ)",
           "half": true
@@ -156,12 +173,14 @@ var WP_DATA = {
         },
         {
           "id": "h9",
+          "attach": true,
           "type": "text",
           "label": "9. เอกสารรับรองที่เกี่ยวข้อง",
           "half": true
         },
         {
           "id": "h10",
+          "attach": true,
           "type": "text",
           "label": "10. อื่นๆ (ระบุ)",
           "half": true
@@ -261,6 +280,7 @@ var WP_DATA = {
         },
         {
           "id": "ht_g6",
+          "attach": true,
           "type": "group",
           "label": "6. เอกสารรับรองที่เกี่ยวข้อง (เช่น การใช้รถกระเช้า หรือบูมลิฟท์ หรือเครน)"
         },
@@ -281,11 +301,13 @@ var WP_DATA = {
         },
         {
           "id": "ht64",
+          "attach": true,
           "type": "checktext",
           "label": "6.4 อื่น ๆ"
         },
         {
           "id": "ht7",
+          "attach": true,
           "type": "text",
           "label": "7. อื่น ๆ"
         }
@@ -350,6 +372,7 @@ var WP_DATA = {
         },
         {
           "id": "e8",
+          "attach": true,
           "type": "checktext",
           "label": "8. เอกสารรับรองที่เกี่ยวข้อง"
         }
@@ -418,11 +441,13 @@ var WP_DATA = {
         },
         {
           "id": "c10",
+          "attach": true,
           "type": "text",
           "label": "10. เอกสารรับรองที่เกี่ยวข้อง"
         },
         {
           "id": "c11",
+          "attach": true,
           "type": "text",
           "label": "11. อื่น ๆ"
         }
@@ -869,6 +894,7 @@ var WP_DATA = {
         },
         {
           "id": "cs6_18",
+          "attach": true,
           "type": "checktext",
           "label": "6.18 อื่นๆ"
         },

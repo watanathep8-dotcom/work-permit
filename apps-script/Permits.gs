@@ -29,7 +29,15 @@ var WP_MIME_BY_EXT = {
   xls: 'application/vnd.ms-excel',
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  // checklist item files (WP_DATA.config.itemFileExt): PDF + common image formats
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+  heic: 'image/heic',
+  heif: 'image/heif'
 };
 // Leading "magic" bytes per extension, so a renamed file cannot slip through.
 var WP_MAGIC_BY_EXT = {
@@ -40,8 +48,16 @@ var WP_MAGIC_BY_EXT = {
   xlsx: [[0x50, 0x4b, 0x03, 0x04]],                // zip (OOXML)
   docx: [[0x50, 0x4b, 0x03, 0x04]],
   xls: [[0xd0, 0xcf, 0x11, 0xe0], [0x50, 0x4b, 0x03, 0x04]], // OLE2 (or mis-named OOXML)
-  doc: [[0xd0, 0xcf, 0x11, 0xe0], [0x7b, 0x5c, 0x72, 0x74], [0x50, 0x4b, 0x03, 0x04]] // OLE2 / RTF / OOXML
+  doc: [[0xd0, 0xcf, 0x11, 0xe0], [0x7b, 0x5c, 0x72, 0x74], [0x50, 0x4b, 0x03, 0x04]], // OLE2 / RTF / OOXML
+  gif: [[0x47, 0x49, 0x46, 0x38, 0x37, 0x61], [0x47, 0x49, 0x46, 0x38, 0x39, 0x61]], // GIF87a / GIF89a
+  bmp: [[0x42, 0x4d]],                               // BM
+  tif: [[0x49, 0x49, 0x2a, 0x00], [0x4d, 0x4d, 0x00, 0x2a]], // II*. / MM.*
+  tiff: [[0x49, 0x49, 0x2a, 0x00], [0x4d, 0x4d, 0x00, 0x2a]]
+  // webp ("RIFF" + "WEBP" at 8) and heic / heif (ISO-BMFF "ftyp" box + brand) are checked in contentMatchesExt_
 };
+// HEIF major brands (ISO/IEC 23008-12): HEVC-coded (heic …) and generic (mif1 / msf1). AVIF ("avif") is not accepted.
+var WP_HEIF_BRANDS = ['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1'];
+var WP_ITEM_FILE_NAME_MAX = 150;
 var WP_SIG_MAX = 1500000; // same as sig_ok() in api.php
 
 // ---------------------------------------------------------------- expiry (inc/data.php)
@@ -208,6 +224,90 @@ function checkAttachment_(a) {
   return { bytes: bytes, ext: ext, name: name, mime: WP_MIME_BY_EXT[ext] };
 }
 
+function asciiAt_(bytes, at, n) {
+  var s = '';
+  for (var i = at; i < at + n && i < bytes.length; i++) s += String.fromCharCode(bytes[i] & 0xff);
+  return s;
+}
+
+/** True when the decoded bytes really are a file of type `ext` (magic bytes / container brand). */
+function contentMatchesExt_(bytes, ext) {
+  if (ext === 'webp') return asciiAt_(bytes, 0, 4) === 'RIFF' && asciiAt_(bytes, 8, 4) === 'WEBP';
+  if (ext === 'heic' || ext === 'heif') {
+    // ISO-BMFF: [size:4]["ftyp"][major brand:4] — heic / heif share the brands (cameras mix them up)
+    return bytes.length >= 12 && asciiAt_(bytes, 4, 4) === 'ftyp' && WP_HEIF_BRANDS.indexOf(asciiAt_(bytes, 8, 4).toLowerCase()) >= 0;
+  }
+  var m = WP_MAGIC_BY_EXT[ext];
+  return !!m && m.some(function (x) { return startsWithBytes_(bytes, x); });
+}
+
+/** The items of the selected work types that take files ("attach": true in Data.gs). */
+function attachItems_(types) {
+  var out = {};
+  types.forEach(function (k) {
+    WP_DATA.workTypes[k].items.forEach(function (it) { if (it.attach) out[it.id] = it; });
+  });
+  return out;
+}
+
+/**
+ * Files attached to the checklist items "เอกสารรับรองที่เกี่ยวข้อง" / "อื่นๆ" (all optional).
+ * `list` = [{item, name, base64}], `types` = the cleaned work types, `usedBytes` = bytes
+ * of the other attachment of the same request. Each file: an attach item of a selected
+ * work type, ≤ itemFileMax per item, an itemFileExt extension whose content matches
+ * (magic bytes; HEIC/HEIF by the ftyp brand), ≤ uploadMaxMb; all files of the request
+ * together ≤ requestMaxMb (Apps Script caps a POST at ~50 MB, base64 adds a third).
+ * Returns [{item, name, ext, mime, bytes}] — nothing is stored yet.
+ */
+function checkItemFiles_(list, types, usedBytes) {
+  if (list === undefined || list === null || list === '') return [];
+  if (!Array.isArray(list)) fail_('ไฟล์แนบรายการตรวจสอบไม่ถูกต้อง');
+  var C = WP_DATA.config, items = attachItems_(types);
+  var maxBytes = C.uploadMaxMb * 1048576, totalMax = C.requestMaxMb * 1048576;
+  var total = usedBytes || 0, per = {}, out = [];
+  // total size first (cheap, before decoding anything)
+  list.forEach(function (a) {
+    var b64 = a && typeof a === 'object' ? String(a.base64 || '').replace(/s+/g, '') : '';
+    total += Math.floor(b64.length * 3 / 4) - 2;
+  });
+  if (total > totalMax) fail_('ไฟล์แนบรวมกันใหญ่เกิน ' + C.requestMaxMb + 'MB', 'TOO_LARGE');
+  total = usedBytes || 0;
+  list.forEach(function (a) {
+    if (!a || typeof a !== 'object' || !a.base64) fail_('ไฟล์แนบรายการตรวจสอบไม่ถูกต้อง');
+    var item = String(a.item || '');
+    if (!Object.prototype.hasOwnProperty.call(items, item)) fail_('ไฟล์แนบไม่ตรงกับรายการตรวจสอบของลักษณะงานที่เลือก');
+    per[item] = (per[item] || 0) + 1;
+    if (per[item] > C.itemFileMax) fail_('แนบไฟล์ได้ไม่เกิน ' + C.itemFileMax + ' ไฟล์ต่อรายการ (' + items[item].label + ')');
+    var full = str_(a.name, 100000);
+    var ext = full.indexOf('.') >= 0 ? full.split('.').pop().toLowerCase() : '';
+    if (C.itemFileExt.indexOf(ext) < 0) fail_('ชนิดไฟล์ไม่รองรับ (PDF หรือรูปภาพเท่านั้น): ' + str_(full, 80));
+    var b64 = String(a.base64).replace(/s+/g, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) fail_('อัปโหลดไฟล์ไม่สำเร็จ');
+    if (Math.floor(b64.length * 3 / 4) - 2 > maxBytes) fail_('ไฟล์ใหญ่เกิน ' + C.uploadMaxMb + 'MB: ' + str_(full, 80));
+    var bytes = Utilities.base64Decode(b64);
+    if (!bytes.length) fail_('อัปโหลดไฟล์ไม่สำเร็จ');
+    if (bytes.length > maxBytes) fail_('ไฟล์ใหญ่เกิน ' + C.uploadMaxMb + 'MB: ' + str_(full, 80));
+    if (!contentMatchesExt_(bytes, ext)) fail_('ชนิดไฟล์ไม่ตรงกับเนื้อหาไฟล์: ' + str_(full, 80));
+    total += bytes.length;
+    if (total > totalMax) fail_('ไฟล์แนบรวมกันใหญ่เกิน ' + C.requestMaxMb + 'MB', 'TOO_LARGE');
+    out.push({ item: item, name: str_(full, WP_ITEM_FILE_NAME_MAX), ext: ext, mime: WP_MIME_BY_EXT[ext], bytes: bytes });
+  });
+  return out;
+}
+
+/** item_files cell → [{fid, item, name, mime, size, file}] (a missing column / junk → []). */
+function itemFilesOf_(r) {
+  var a = jdec_(r && r.item_files, []);
+  return Array.isArray(a) ? a.filter(function (x) { return x && typeof x === 'object' && x.fid && x.file; }) : [];
+}
+
+/** What the API shows: names only — never the Drive id. */
+function itemFilesOut_(r) {
+  return itemFilesOf_(r).map(function (x) {
+    return { fid: x.fid, item: x.item, name: x.name, mime: x.mime, size: Number(x.size) || 0 };
+  });
+}
+
 function saveDriveFile_(bytes, mime, filename) {
   // Files stay private (default sharing) and are only served through apiFile_ / apiPermit_.
   return folder_().createFile(Utilities.newBlob(bytes, mime, filename)).getId();
@@ -261,6 +361,7 @@ function permitOut_(r, staff) {
     checklist: jdec_(r.checklist, {}), loto: jdec_(r.loto, []), confined: jdec_(r.confined, null),
     inspections: jdec_(r.inspections, {}),
     has_attachment: !!r.attachment_file, attachment_name: r.attachment_name,
+    item_files: itemFilesOut_(r),
     has_owner_sign: !!r.owner_sign_file, has_approver_sign: !!r.approver_sign_file,
     status: r.status, es: effectiveStatus_(r), end_ts: permitEndTs_(r),
     approver_name: r.approver_name, approve_comment: r.approve_comment,
@@ -449,6 +550,7 @@ function apiSubmit_(d) {
   if (!reqSign) fail_('กรุณาลงลายมือชื่อผู้ขออนุญาต');
   var ownSign = checkSignature_(d.owner_sign);
   var att = checkAttachment_(d.attachment);
+  var itemFiles = checkItemFiles_(d.item_files, jdec_(fields.work_types, []), att ? att.bytes.length : 0);
 
   var row = Object.assign({}, fields, {
     inspections: '{}', status: 'pending',
@@ -467,9 +569,19 @@ function apiSubmit_(d) {
       row.attachment_mime = att.mime;
       created.push(row.attachment_file);
     }
+    if (itemFiles.length) {
+      // same private app folder as the attachment / signatures (default sharing: owner only)
+      row.item_files = JSON.stringify(itemFiles.map(function (f) {
+        var id = saveDriveFile_(f.bytes, f.mime, stampName_(f.ext));
+        created.push(id);
+        return { fid: randomHex_(16), item: f.item, name: f.name, mime: f.mime, size: f.bytes.length, file: id };
+      }));
+      toCell_(row.item_files, 'item_files');
+    }
     out = withLock_(function () {
       var ctx = { tables: {} };
       var t = table_(ctx, 'permits');
+      if (row.item_files) ensureColumn_(t, 'item_files'); // a sheet set up before this column existed
       var prev = submitReplay_(ctx, ridKey); // an identical try finished while this one uploaded its files
       if (prev) {
         created.forEach(trashDriveFile_);
@@ -554,13 +666,20 @@ function apiPermit_(p, ctx) {
 /** file.php — attachment as base64 for authorized callers only. */
 function apiFile_(p, ctx) {
   var r = authorizedPermit_(p, ctx);
-  if (!r.attachment_file) fail_('ไม่พบไฟล์', 'NOT_FOUND');
+  var fileId = r.attachment_file, name = r.attachment_name, mime0 = r.attachment_mime;
+  if (p.fid !== undefined && p.fid !== null && p.fid !== '') { // a checklist item file (same access rules)
+    var x = null;
+    itemFilesOf_(r).some(function (f) { if (String(f.fid) === String(p.fid)) { x = f; return true; } return false; });
+    if (!x) fail_('ไม่พบไฟล์', 'NOT_FOUND');
+    fileId = x.file; name = x.name; mime0 = x.mime;
+  }
+  if (!fileId) fail_('ไม่พบไฟล์', 'NOT_FOUND');
   var blob;
-  try { blob = DriveApp.getFileById(r.attachment_file).getBlob(); } catch (e) { fail_('ไม่พบไฟล์', 'NOT_FOUND'); }
-  var mime = r.attachment_mime || blob.getContentType() || 'application/octet-stream';
+  try { blob = DriveApp.getFileById(fileId).getBlob(); } catch (e) { fail_('ไม่พบไฟล์', 'NOT_FOUND'); }
+  var mime = mime0 || blob.getContentType() || 'application/octet-stream';
   return {
-    name: r.attachment_name, mimeType: mime,
-    inline: ['application/pdf', 'image/png', 'image/jpeg'].indexOf(mime) >= 0,
+    name: name, mimeType: mime,
+    inline: ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp'].indexOf(mime) >= 0,
     base64: Utilities.base64Encode(blob.getBytes())
   };
 }
@@ -1149,7 +1268,8 @@ function apiDelete_(d, ctx) {
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
     if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
-    var fileIds = [p.attachment_file, p.requester_sign_file, p.owner_sign_file, p.approver_sign_file, p.area_sign_file, p.resp_sign_file];
+    var fileIds = [p.attachment_file, p.requester_sign_file, p.owner_sign_file, p.approver_sign_file, p.area_sign_file, p.resp_sign_file]
+      .concat(itemFilesOf_(p).map(function (x) { return x.file; }));
     fileIds.forEach(trashDriveFile_);
     var lt = table_(ctx, 'permit_logs');
     var logs = lt.rows.filter(function (l) { return Number(l.permit_id) === Number(p.id); });
@@ -1270,7 +1390,8 @@ function apiResetData_(p, ctx) {
     while (it.hasNext()) trashOne(it.next());
     var trackKeys = [];
     pt.rows.forEach(function (r) {
-      [r.attachment_file, r.requester_sign_file, r.owner_sign_file, r.approver_sign_file, r.area_sign_file, r.resp_sign_file].forEach(function (id) {
+      [r.attachment_file, r.requester_sign_file, r.owner_sign_file, r.approver_sign_file, r.area_sign_file, r.resp_sign_file]
+        .concat(itemFilesOf_(r).map(function (x) { return x.file; })).forEach(function (id) {
         if (!id || seen[id]) return;
         try { trashOne(DriveApp.getFileById(id)); } catch (e) { seen[id] = true; }
       });

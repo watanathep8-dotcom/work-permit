@@ -12,7 +12,7 @@
 <link rel="preconnect" href="https://cdnjs.cloudflare.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Kanit:wght@300;400;500;600;700&family=Sarabun:wght@300;400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
-<link rel="stylesheet" href="assets/css/app.css?v=6">
+<link rel="stylesheet" href="assets/css/app.css?v=7">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#x26D1;&#xFE0F;</text></svg>">
 </head>
 <body data-layout="public" data-active="request" data-title="ขอใบอนุญาตปฏิบัติงาน" data-edit-layout="admin" data-edit-active="list" data-edit-title="แก้ไขข้อมูลใบอนุญาต">
@@ -125,18 +125,16 @@
   <div id="edit-summary" class="hide"></div>
   <div class="grid g2 mb2" id="rules-grid">
     <div class="card">
-      <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-scale-balanced ic-swing"></i></span><h3>ระเบียบปฏิบัติเพื่อความปลอดภัย</h3></div>
-      <div class="card-b rules"><h4><i class="fa-solid fa-shield-heart"></i> อาชีวอนามัย และสภาพแวดล้อมในการทำงาน</h4>
+      <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-scale-balanced ic-swing"></i></span><h3>ระเบียบปฏิบัติเพื่อความปลอดภัย อาชีวอนามัย และสภาพแวดล้อมในการทำงาน</h3></div>
+      <div class="card-b rules">
         <ol id="rules"></ol></div>
     </div>
     <div class="card">
-      <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-handshake ic-beat"></i></span><h3>ข้อตกลงด้านความปลอดภัย</h3></div>
-      <div class="card-b rules"><h4><i class="fa-solid fa-file-contract"></i> อาชีวอนามัย และสภาพแวดล้อมในการทำงาน</h4>
+      <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-handshake ic-beat"></i></span><h3>ข้อตกลงด้านความปลอดภัย อาชีวอนามัย และสภาพแวดล้อมในการทำงาน</h3></div>
+      <div class="card-b rules">
         <ol id="agreement"></ol>
         <h4><i class="fa-solid fa-recycle"></i> <span id="waste-title"></span></h4>
-        <ol id="waste"></ol>
-        <h4><i class="fa-solid fa-circle-exclamation"></i> หมายเหตุ</h4>
-        <ol id="remarks"></ol></div>
+        <ol id="waste"></ol></div>
     </div>
   </div>
 
@@ -153,7 +151,7 @@
   </div>
 
   <div class="card" id="attach-card">
-    <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-paperclip ic-swing"></i></span><h3>เอกสารแนบ (ถ้ามี)</h3><span class="spacer"></span><small class="muted">รายชื่อพนักงาน, ปจ.1/ปจ.2, Lifting Plan ฯลฯ · PDF/JPG/PNG/XLS/DOC ≤ <span id="max-mb">10</span>MB</small></div>
+    <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-paperclip ic-swing"></i></span><h3>เอกสารแนบ (ถ้ามี)</h3><span class="spacer"></span><small class="muted">รายชื่อพนักงาน, ปจ.1/ปจ.2, Lifting Plan ฯลฯ · PDF/JPG/PNG/XLS/DOC ≤ <span id="max-mb">10</span>MB · ไฟล์แนบทั้งหมดรวม ≤ <span id="total-mb">25</span>MB</small></div>
     <div class="card-b">
       <label class="drop" id="drop"><input type="file" id="attach" hidden accept=".pdf,.jpg,.jpeg,.png,.xls,.xlsx,.doc,.docx">
         <i class="fa-solid fa-cloud-arrow-up"></i>ลากไฟล์มาวาง หรือ <b>คลิกเพื่อเลือกไฟล์</b><div class="fname" id="fname"></div></label>
@@ -169,14 +167,14 @@
 </form>
 </div>
 <script src="config.js"></script>
-<script src="assets/js/data.js?v=7"></script>
+<script src="assets/js/data.js?v=8"></script>
 <script src="assets/js/core.js?v=5"></script>
 <script src="assets/js/layout.js?v=4"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
-<script src="assets/js/app.js?v=6"></script>
-<script src="assets/js/parts.js?v=6"></script>
-<script src="assets/js/pages/request-init.js?v=5"></script>
-<script src="assets/js/request.js?v=7"></script>
+<script src="assets/js/app.js?v=7"></script>
+<script src="assets/js/parts.js?v=8"></script>
+<script src="assets/js/pages/request-init.js?v=6"></script>
+<script src="assets/js/request.js?v=8"></script>
 </body>
 </html>

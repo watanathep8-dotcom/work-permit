@@ -20,12 +20,12 @@
   const li = arr => arr.map(r => `<li>${E(r)}</li>`).join('');
   $('#rules').innerHTML = li(D.safetyRules);
   $('#agreement').innerHTML = li(D.safetyAgreement);
-  $('#remarks').innerHTML = li(D.remarks);
   $('#waste-title').textContent = D.wasteRules.title;
   $('#waste').innerHTML = li(D.wasteRules.items);
   $('#agree-text').textContent = D.agreementAck;
   $('#review-note').textContent = D.reviewNote;
   $('#max-mb').textContent = D.config.uploadMaxMb;
+  $('#total-mb').textContent = D.config.requestMaxMb;
 
   // ผู้รับผิดชอบงาน (approval workflow): public list of id + name. Empty list = no
   // responsible accounts yet → the request goes straight to the จป. (field stays hidden).

@@ -40,8 +40,15 @@
   const sigImg = src => src ? `<img class="sig" src="${src}">` : '';
   const fill = (v, w = '') => `<u class="fill"${w ? ` style="min-width:${w}"` : ''}>${E(v || '')}</u>`;
 
+  // names of the files attached to a checklist item (เอกสารรับรองที่เกี่ยวข้อง / อื่นๆ), listed under it
+  const itemFiles = Array.isArray(p.item_files) ? p.item_files : [];
+  const filesHtml = it => {
+    const fs = it.attach ? itemFiles.filter(f => f.item === it.id) : [];
+    return fs.length ? `<div class="it files">ไฟล์แนบ: ${fs.map(f => E(f.name)).join(' · ')}</div>` : '';
+  };
   // one checklist item as printed on the form
-  const itemHtml = it => {
+  const itemHtml = it => itemHtml0(it) + filesHtml(it);
+  const itemHtml0 = it => {
     const v = cl[it.id];
     switch (it.type) {
       case 'group': return `<div class="grp">${E(it.label)}</div>`;

@@ -33,6 +33,12 @@ passed += fm.passed;
 failures.push(...fm.failures);
 console.log(`paper form (FM-MR-58) data model e2e: ${fm.passed} passed, ${fm.failures.length} failed (${Date.now() - tf} ms)`);
 
+const ta = Date.now();
+const at = require('./attach.test.js')();
+passed += at.passed;
+failures.push(...at.failures);
+console.log(`checklist item files e2e: ${at.passed} passed, ${at.failures.length} failed (${Date.now() - ta} ms)`);
+
 // 2 ---------------------------------------------------------------------------
 const gsData = fs.readFileSync(path.join(ROOT, 'apps-script', 'Data.gs'), 'utf8');
 const jsData = fs.readFileSync(path.join(ROOT, 'docs', 'assets', 'js', 'data.js'), 'utf8');

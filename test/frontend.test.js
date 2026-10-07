@@ -289,7 +289,27 @@ module.exports = async function run() {
     check('progress: rejected at stage 1 → that step is "ไม่อนุมัติ"', /\bbad\b/.test(st2[2]) && h.includes('ไม่อนุมัติ') && !/\bbad\b/.test(st2[4]), st2);
     check('progress: legacy permit keeps the old 4 steps', (X.trackStepsHTML({ status: 'pending', es: 'pending', workflow: false }).match(/<div class="ts /g) || []).length === 4);
     check('stage badge only while pending in the workflow', X.stageBadge(view).includes('ขั้นที่ 1') && X.stageBadge(Object.assign({}, view, { status: 'approved' })) === '');
+    // checklist item files: staff get open buttons, the requester (status page) names only; older permits nothing
+    const pf = Object.assign({}, view, { item_files: [{ fid: 'a'.repeat(16), item: 'h9', name: 'cert<1>.pdf', size: 10 }, { fid: 'b'.repeat(16), item: 'g3', name: 'p.heic', size: 9 }] });
+    const hs = X.infoCardHTML(pf, { staff: true }), hp = X.infoCardHTML(pf);
+    check('item files: staff info card links each file by fid (form order, escaped)', hs.includes('data-item-file="' + 'a'.repeat(16) + '"') && hs.includes('cert&lt;1&gt;.pdf') &&
+      hs.indexOf('p.heic') < hs.indexOf('cert&lt;1&gt;') && hs.includes('9. เอกสารรับรองที่เกี่ยวข้อง'), hs);
+    check('item files: public info card shows names only', hp.includes('p.heic') && !hp.includes('data-item-file'), hp);
+    check('item files: older permit (no item_files) → nothing', !X.infoCardHTML(Object.assign({}, view, { item_files: undefined })).includes('ไฟล์แนบรายการตรวจสอบ'));
     X.clearSession();
+  }
+
+  // ---- request wizard step 4 (ยอมรับระเบียบ & ลงนาม): box titles; หมายเหตุ 1–8 only on the printed form
+  {
+    const html = fs.readFileSync(path.join(ROOT, 'docs/request.html'), 'utf8');
+    const init = fs.readFileSync(path.join(ROOT, 'docs/assets/js/pages/request-init.js'), 'utf8');
+    const p4 = html.slice(html.indexOf('data-panel="3"'), html.indexOf('id="agree-card"'));
+    check('step 4: left box title', p4.includes('<h3>ระเบียบปฏิบัติเพื่อความปลอดภัย อาชีวอนามัย และสภาพแวดล้อมในการทำงาน</h3>'));
+    check('step 4: right box title', p4.includes('<h3>ข้อตกลงด้านความปลอดภัย อาชีวอนามัย และสภาพแวดล้อมในการทำงาน</h3>'));
+    check('step 4: หมายเหตุ block removed, agreements + กากอุตสาหกรรม kept', !p4.includes('หมายเหตุ') && !p4.includes('id="remarks"') && !init.includes('D.remarks') &&
+      p4.includes('id="agreement"') && p4.includes('id="waste"') && p4.includes('id="rules"'));
+    const pr = fs.readFileSync(path.join(ROOT, 'docs/assets/js/pages/print.js'), 'utf8');
+    check('print still lists หมายเหตุ (D.remarks) and item file names', pr.includes('D.remarks') && pr.includes('item_files'));
   }
 
   return { passed, failures };

@@ -182,8 +182,14 @@
       </div></div>`;
 
   // ---------- Checklist renderer ----------
-  WP.renderChecklist = (box, defs, types, values = {}, readonly = false) => {
+  // opts.attach (request form only): an "แนบไฟล์" button + file list next to the items marked
+  // "attach" in Data.gs (เอกสารรับรองที่เกี่ยวข้อง / อื่นๆ); request.js manages the files.
+  WP.renderChecklist = (box, defs, types, values = {}, readonly = false, opts = {}) => {
     const ro = readonly ? 'disabled' : '';
+    const att = it => opts.attach && it.attach && !readonly;
+    const accept = (WP.data.config.itemFileExt || []).map(x => '.' + x).join(',');
+    const attBtn = it => att(it) ? `<label class="btn sm ghost cl-att-btn" title="แนบไฟล์ PDF / รูปภาพ (ถ้ามี)"><input type="file" multiple hidden data-att="${it.id}" accept="${accept}"><i class="fa-solid fa-paperclip"></i> แนบไฟล์</label>` : '';
+    const attList = it => att(it) ? `<ul class="cl-att-list" data-att-list="${it.id}"></ul>` : '';
     values = WP.upgradeChecklist(values);
     box._legacy = values._legacy || null;
     let html = '';
@@ -196,7 +202,7 @@
         <div class="cl-body">`;
       d.items.forEach(it => {
         const v = values[it.id];
-        if (it.type === 'group') { html += `<div class="cl-group">${it.label}</div>`; return; }
+        if (it.type === 'group') { html += `<div class="cl-group">${it.label}${attBtn(it)}</div>` + (att(it) ? `<div class="full cl-att-row">${attList(it)}</div>` : ''); return; }
         if (it.type === 'check') {
           html += `<label class="ck ${readonly ? 'readonly' : ''}"><input type="checkbox" data-id="${it.id}" ${v ? 'checked' : ''} ${ro}><span class="box"><i class="fa-solid fa-check"></i></span><span class="lbl">${it.label}</span></label>`;
         } else if (it.type === 'choice') {
@@ -205,11 +211,12 @@
         } else if (it.type === 'info') {
           html += `<div class="cl-info full"><div class="cl-group"><i class="fa-solid fa-truck-medical ic-bob"></i> ${it.label}</div><ol>${it.lines.map(l => `<li>${l}</li>`).join('')}</ol></div>`;
         } else if (it.type === 'text') {
-          html += `<div class="cl-text ${it.half ? '' : 'full'}"><label>${it.label}</label><input class="input" data-id="${it.id}" data-kind="text" value="${WP.esc(v || '')}" ${ro} placeholder="ระบุ (ถ้ามี)"></div>`;
+          const inp = `<input class="input" data-id="${it.id}" data-kind="text" value="${WP.esc(v || '')}" ${ro} placeholder="ระบุ (ถ้ามี)">`;
+          html += `<div class="cl-text ${it.half ? '' : 'full'}"><label>${it.label}</label>${att(it) ? `<div class="cl-inrow">${inp}${attBtn(it)}</div>${attList(it)}` : inp}</div>`;
         } else if (it.type === 'checktext') {
           const on = v && v.on, t = v && v.text || '';
           html += `<div class="full"><label class="ck ${readonly ? 'readonly' : ''}"><input type="checkbox" data-id="${it.id}" data-kind="ct" ${on ? 'checked' : ''} ${ro}><span class="box"><i class="fa-solid fa-check"></i></span><span class="lbl">${it.label}</span></label>
-            <div class="cl-text" style="padding-left:48px"><input class="input" data-ct="${it.id}" value="${WP.esc(t)}" ${ro} placeholder="ระบุรายละเอียด"></div></div>`;
+            <div class="cl-text" style="padding-left:48px">${att(it) ? '<div class="cl-inrow">' : ''}<input class="input" data-ct="${it.id}" value="${WP.esc(t)}" ${ro} placeholder="ระบุรายละเอียด (ถ้ามี)">${att(it) ? `${attBtn(it)}</div>${attList(it)}` : ''}</div></div>`;
         } else if (it.type === 'ppe') {
           const sel = (v && v.sel) || [], oth = (v && v.other) || '';
           html += `<div class="full"><div class="cl-group" style="padding-left:14px">${it.label}</div><div class="chips" data-ppe="${it.id}">` +

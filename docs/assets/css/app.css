@@ -620,3 +620,23 @@ table.tbl { width: 100%; border-collapse: collapse; font-size: 14px; }
   .task-row { flex-wrap: wrap; }
   .task-row .t-wait { text-align: left; }
 }
+
+/* ---------- checklist item files (เอกสารรับรองที่เกี่ยวข้อง / อื่นๆ) ---------- */
+.cl-inrow { display: flex; gap: 8px; align-items: center; }
+.cl-inrow .input { flex: 1; min-width: 0; }
+.cl-att-btn { white-space: nowrap; flex-shrink: 0; }
+.cl-group .cl-att-btn { margin-left: auto; font-weight: 400; color: var(--text); }
+.cl-att-row { padding: 0 14px; }
+.cl-att-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cl-att-list:empty { display: none; }
+.cl-att-list li { display: flex; align-items: center; gap: 8px; padding: 6px 6px 6px 10px; border-radius: 10px; background: rgba(16, 185, 129, .08); border: 1px solid var(--line); font-size: 13px; animation: rise .3s both; }
+.cl-att-list li > i { color: var(--em-2); }
+.cl-att-list .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-att-list .sz { color: var(--text-2); white-space: nowrap; }
+.cl-att-list .rm { border: 0; background: transparent; color: var(--red); cursor: pointer; font-size: 15px; width: 28px; height: 28px; border-radius: 8px; transition: .2s; }
+.cl-att-list .rm:hover { background: rgba(248, 113, 113, .15); transform: rotate(90deg); }
+.item-files { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.item-files .it-lbl { color: var(--text-2); font-size: 12.5px; display: block; }
+.item-files .chips-f { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 3px; }
+.item-files .fchip { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; padding: 4px 10px; border-radius: 10px; border: 1px solid var(--line); background: rgba(16, 185, 129, .06); }
+@media (max-width: 560px) { .cl-inrow { flex-wrap: wrap; } .cl-inrow .input { flex-basis: 100%; } }
