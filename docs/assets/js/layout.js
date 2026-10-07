@@ -64,7 +64,7 @@
     aside.innerHTML = `
   <a class="brand" href="${WP.homeUrl()}">
     <span class="brand-icon"><i class="fa-solid fa-shield-halved"></i></span>
-    <span class="brand-text"><b>e-Work Permit</b><small>${safety ? 'ระบบอนุมัติ จป.' : 'ระบบอนุมัติใบอนุญาต'}</small></span>
+    <span class="brand-text"><b>e-Work Permit</b><small>${safety ? 'ระบบอนุมัติ จป.' : 'ระบบอนุมัติใบอนุญาต'}</small><small class="programming-credit">Programming by Duongruthai_Milk</small></span>
   </a>
   <nav class="side-nav">
     ${safety ? `
@@ -102,7 +102,7 @@
     header.innerHTML = `
   <a class="brand" href="${B}/index.html">
     <span class="brand-icon"><i class="fa-solid fa-shield-halved"></i></span>
-    <span class="brand-text"><b>e-Work Permit</b><small>ใบขออนุญาตปฏิบัติงาน</small></span>
+    <span class="brand-text"><b>e-Work Permit</b><small>ใบขออนุญาตปฏิบัติงาน</small><small class="programming-credit">Programming by Duongruthai_Milk</small></span>
   </a>
   <nav>
     ${pn('home', 'index.html', 'fa-house', 'หน้าแรก')}
