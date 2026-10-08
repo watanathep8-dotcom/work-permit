@@ -45,27 +45,41 @@
     if (rk === 'safety') { const c = (ins.safety || {}).permit; return { name: c ? c.name : (done ? p.approver_name : ''), at: c ? c.at : (done ? p.approved_at : ''), img: done ? sg.approver : '', wait: stage === 'safety' }; }
     return null; // legacy permit without workflow: typed by the จป. as before
   };
-  const inspRows = Object.entries(D.inspectRoles).map(([rk, rl]) => `
-            <tr><td class="role">${E(rl)}</td>
-              ${Object.keys(D.inspectStages).map(sk => {
-                const pc = sk === 'permit' ? permitCell(rk) : null;
-                if (pc) {
-                  return `<td><div class="insp-cell ${pc.name ? 'filled' : ''}">
+  // one column "อนุมัติและตรวจสอบก่อนเริ่มงาน" (the approval covers the checks before / during the work):
+  // stage approval (rows 1–2) / จป. approval (row 3) — or, on a legacy permit, rows 1–2 typed by the
+  // จป. as before — plus any older "ก่อนเริ่มงาน" / "ระหว่างทำงาน" stamp as small lines
+  const stampCell = c => `<td><div class="insp-cell ${c ? 'filled' : ''}">`;
+  const mergedCell = rk => {
+    const extra = WP.inspLegacyHTML(ins, rk);
+    const pc = permitCell(rk);
+    if (pc) {
+      return `<td><div class="insp-cell ${pc.name || extra ? 'filled' : ''}">
                   ${pc.img ? `<img class="sig-img sm" src="${pc.img}">` : (pc.name ? '<i class="fa-solid fa-stamp stamp"></i>' : '')}
                   <div class="insp-name">${pc.name ? E(pc.name) : `<span class="muted">${pc.wait ? 'รออนุมัติ' : '—'}</span>`}</div>
-                  <small>${pc.at ? WP.thaiDate(pc.at, true) : '&nbsp;'}</small></div></td>`;
-                }
-                const c = (ins[rk] || {})[sk];
-                const enabled = editable;
-                const mine = !c && sk !== 'permit' && selfRows.includes(rk);
-                return `<td><div class="insp-cell ${c ? 'filled' : ''}">
+                  <small>${pc.at ? WP.thaiDate(pc.at, true) : '&nbsp;'}</small>${extra}</div></td>`;
+    }
+    const c = (ins[rk] || {}).permit;
+    return `${stampCell(c || extra)}
                   ${c ? '<i class="fa-solid fa-stamp stamp"></i>' : ''}
-                  <input data-r="${rk}" data-s="${sk}" value="${E(c ? c.name : '')}" placeholder="${enabled ? 'ลงชื่อ...' : ''}" ${enabled ? '' : 'disabled'}>
+                  <input data-r="${rk}" data-s="permit" value="${E(c ? c.name : '')}" placeholder="${editable ? 'ลงชื่อ...' : ''}" ${editable ? '' : 'disabled'}>
+                  <small>${c ? WP.thaiDate(c.at, true) : '&nbsp;'}</small>${extra}</div></td>`;
+  };
+  // "การตรวจสอบ หลังเสร็จงาน": the จป. types / "ลงชื่อฉัน"; rows 1–2 of an approved permit sign their own cell
+  const afterCell = rk => {
+    const c = (ins[rk] || {}).after;
+    const mine = !c && selfRows.includes(rk);
+    return `${stampCell(c)}
+                  ${c ? '<i class="fa-solid fa-stamp stamp"></i>' : ''}
+                  <input data-r="${rk}" data-s="after" value="${E(c ? c.name : '')}" placeholder="${editable ? 'ลงชื่อ...' : ''}" ${editable ? '' : 'disabled'}>
                   <small>${c ? WP.thaiDate(c.at, true) : '&nbsp;'}</small>
-                  ${editable && rk === 'safety' && sk !== 'permit' && !c ? `<button type="button" class="btn sm ghost mt1 sign-me" data-r="${rk}" data-s="${sk}"><i class="fa-solid fa-signature"></i> ลงชื่อฉัน</button>` : ''}
-                  ${mine && !editable ? `<button type="button" class="btn sm mt1 self-sign" data-r="${rk}" data-s="${sk}"><i class="fa-solid fa-signature"></i> ลงชื่อตรวจสอบ</button>` : ''}
+                  ${editable && rk === 'safety' && !c ? `<button type="button" class="btn sm ghost mt1 sign-me" data-r="${rk}" data-s="after"><i class="fa-solid fa-signature"></i> ลงชื่อฉัน</button>` : ''}
+                  ${mine && !editable ? `<button type="button" class="btn sm mt1 self-sign" data-r="${rk}" data-s="after"><i class="fa-solid fa-signature"></i> ลงชื่อตรวจสอบ</button>` : ''}
                 </div></td>`;
-              }).join('')}
+  };
+  const inspRows = Object.entries(D.inspectRoles).map(([rk, rl]) => `
+            <tr><td class="role">${E(rl)}</td>
+              ${mergedCell(rk)}
+              ${afterCell(rk)}
               <td><div class="insp-cell"><input data-r="${rk}" data-note="1" value="${E((ins[rk] || {}).note || '')}" placeholder="..." ${editable ? '' : 'disabled'}>${(() => { const c = rk === 'owner' ? p.area_comment : rk === 'contractor' ? p.resp_comment : (done ? p.approve_comment : ''); return c ? `<small>“${E(c)}”</small>` : ''; })()}</div></td>
             </tr>`).join('');
 
@@ -165,7 +179,7 @@
 <div class="card hero-strip glow-border always reveal">
   <div class="hs-ic"><i class="fa-solid ${p.status === 'pending' ? 'fa-gavel ic-wiggle' : 'fa-file-shield ic-float'}"></i></div>
   <div>
-    <h2>${E(p.permit_no)} ${WP.statusBadge(es)} ${WP.stageBadge(p)}</h2>
+    <h2>${E(p.permit_no)} ${WP.statusBadge(es)} ${WP.stageBadge(p)} ${WP.workDoneBadge(p)}</h2>
     <div class="meta"><span><i class="fa-solid fa-user"></i> ${E(p.requester_name)} (${E(p.requester_company)})</span><span><i class="fa-solid fa-location-dot"></i> ${E(p.location)}</span><span><i class="fa-regular fa-paper-plane"></i> ยื่นเมื่อ ${WP.thaiDate(p.created_at, true)}</span></div>
   </div>
   <div class="actions">
@@ -199,11 +213,11 @@
     </div>` : ''}
 
     <div class="card mb2 reveal">
-      <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-clipboard-user ic-bob"></i></span><h3>การอนุญาต & การตรวจสอบ (ก่อน / ระหว่าง / หลัง)</h3></div>
+      <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-clipboard-user ic-bob"></i></span><h3>อนุมัติ & ตรวจสอบ (ก่อนเริ่มงาน / หลังเสร็จงาน)</h3></div>
       <div class="card-b" style="overflow-x:auto">
         <p class="text2 mt0 small-stmt">${D.approvalStatement.map(E).join(' ')}</p>
         <table class="insp" id="insp">
-          <thead><tr><th></th>${Object.values(D.inspectStages).map(sl => `<th>${E(sl)}</th>`).join('')}<th>หมายเหตุ</th></tr></thead>
+          <thead><tr><th></th><th>${E(WP.INSP_MERGED_LABEL)}</th><th>${E(D.inspectStages.after)}</th><th>หมายเหตุ</th></tr></thead>
           <tbody>${inspRows}</tbody>
         </table>
         ${editable ? '<div class="flex mt2"><button class="btn" id="btn-save"><i class="fa-solid fa-floppy-disk"></i> บันทึกผลการตรวจสอบ</button><span class="hint">ระบบประทับเวลาให้อัตโนมัติเมื่อมีการลงชื่อ</span></div>' : ''}
@@ -213,6 +227,7 @@
 
   <div style="position:sticky;top:90px">
     ${flow}
+    ${WP.workDoneHTML(p)}
     ${side}
     ${wfSigns}
 
@@ -232,6 +247,7 @@
 </div>`;
   WP.reveal(root);
   WP.bindAttachment(root, { id: p.id });
+  WP.bindWorkDonePhotos(root, { id: p.id });
 
   // ---------- same client logic as view.php ----------
   WP.renderChecklist($('#checklist'), WP.defs, P.types, P.checklist, !clEditable);

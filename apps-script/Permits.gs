@@ -308,6 +308,61 @@ function itemFilesOut_(r) {
   });
 }
 
+/** work_done_photos cell → [{fid, name, mime, size, file}] (a missing column / junk → []). */
+function workDonePhotosOf_(r) {
+  var a = jdec_(r && r.work_done_photos, []);
+  return Array.isArray(a) ? a.filter(function (x) { return x && typeof x === 'object' && x.fid && x.file; }) : [];
+}
+
+/** What the API shows: names only — never the Drive id. */
+function workDonePhotosOut_(r) {
+  return workDonePhotosOf_(r).map(function (x) {
+    return { fid: x.fid, name: x.name, mime: x.mime, size: Number(x.size) || 0 };
+  });
+}
+
+/** Every Drive file a permit row references (attachment, signatures, item files, work-done photos). */
+function permitFileIds_(r) {
+  return [r.attachment_file, r.requester_sign_file, r.owner_sign_file, r.approver_sign_file, r.area_sign_file, r.resp_sign_file]
+    .concat(itemFilesOf_(r).map(function (x) { return x.file; }))
+    .concat(workDonePhotosOf_(r).map(function (x) { return x.file; }));
+}
+
+/**
+ * Photos of "แจ้งเสร็จงาน": `list` = [{name, base64}], 1..workDonePhotoMax images
+ * (workDonePhotoExt, content checked like the item files), each ≤ uploadMaxMb,
+ * together ≤ requestMaxMb (base64 keeps the POST well under Apps Script's ~50 MB).
+ * Returns [{name, ext, mime, bytes}] — nothing is stored yet.
+ */
+function checkWorkDonePhotos_(list) {
+  var C = WP_DATA.config;
+  if (!Array.isArray(list) || !list.length) fail_('กรุณาแนบรูปถ่ายเมื่อเสร็จงานอย่างน้อย 1 รูป');
+  if (list.length > C.workDonePhotoMax) fail_('แนบรูปถ่ายได้ไม่เกิน ' + C.workDonePhotoMax + ' รูป', 'TOO_LARGE');
+  var maxBytes = C.uploadMaxMb * 1048576, totalMax = C.requestMaxMb * 1048576, total = 0;
+  list.forEach(function (a) { // total size first (cheap, before decoding anything)
+    var b64 = a && typeof a === 'object' ? String(a.base64 || '').replace(/\s+/g, '') : '';
+    total += Math.floor(b64.length * 3 / 4) - 2;
+  });
+  if (total > totalMax) fail_('รูปถ่ายรวมกันใหญ่เกิน ' + C.requestMaxMb + 'MB', 'TOO_LARGE');
+  total = 0;
+  return list.map(function (a) {
+    if (!a || typeof a !== 'object' || !a.base64) fail_('รูปถ่ายไม่ถูกต้อง');
+    var full = str_(a.name, 100000);
+    var ext = full.indexOf('.') >= 0 ? full.split('.').pop().toLowerCase() : '';
+    if (C.workDonePhotoExt.indexOf(ext) < 0) fail_('ชนิดไฟล์ไม่รองรับ (รูปภาพเท่านั้น): ' + str_(full, 80));
+    var b64 = String(a.base64).replace(/\s+/g, '');
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64)) fail_('อัปโหลดรูปถ่ายไม่สำเร็จ');
+    if (Math.floor(b64.length * 3 / 4) - 2 > maxBytes) fail_('รูปถ่ายใหญ่เกิน ' + C.uploadMaxMb + 'MB: ' + str_(full, 80), 'TOO_LARGE');
+    var bytes = Utilities.base64Decode(b64);
+    if (!bytes.length) fail_('อัปโหลดรูปถ่ายไม่สำเร็จ');
+    if (bytes.length > maxBytes) fail_('รูปถ่ายใหญ่เกิน ' + C.uploadMaxMb + 'MB: ' + str_(full, 80), 'TOO_LARGE');
+    if (!contentMatchesExt_(bytes, ext)) fail_('ชนิดไฟล์ไม่ตรงกับเนื้อหาไฟล์: ' + str_(full, 80));
+    total += bytes.length;
+    if (total > totalMax) fail_('รูปถ่ายรวมกันใหญ่เกิน ' + C.requestMaxMb + 'MB', 'TOO_LARGE');
+    return { name: str_(full, WP_ITEM_FILE_NAME_MAX), ext: ext, mime: WP_MIME_BY_EXT[ext], bytes: bytes };
+  });
+}
+
 function saveDriveFile_(bytes, mime, filename) {
   // Files stay private (default sharing) and are only served through apiFile_ / apiPermit_.
   return folder_().createFile(Utilities.newBlob(bytes, mime, filename)).getId();
@@ -372,7 +427,9 @@ function permitOut_(r, staff) {
     area_assigned_at: r.area_assigned_at, area_approved_at: r.area_approved_at, area_comment: r.area_comment,
     resp_approved_at: r.resp_approved_at, resp_comment: r.resp_comment,
     has_area_sign: !!r.area_sign_file, has_resp_sign: !!r.resp_sign_file,
-    stage_started_at: r.stage_started_at, reject_stage: r.reject_stage
+    stage_started_at: r.stage_started_at, reject_stage: r.reject_stage,
+    // the contractor's "แจ้งเสร็จงาน" (action work_done)
+    work_done_at: r.work_done_at || '', work_done_note: r.work_done_note || '', work_done_photos: workDonePhotosOut_(r)
   };
   if (staff) {
     out.responsible_id = Number(r.responsible_id) || 0;
@@ -389,7 +446,7 @@ function listRowOut_(r) {
     requester_phone: r.requester_phone, location: r.location, worker_count: Number(r.worker_count) || 0,
     approver_name: r.approver_name, created_at: r.created_at, end_ts: permitEndTs_(r),
     stage: stageOf_(r), responsible_name: r.responsible_name, area_owner_name: r.area_owner_name,
-    stage_started_at: r.stage_started_at
+    stage_started_at: r.stage_started_at, work_done_at: r.work_done_at || ''
   };
 }
 
@@ -695,9 +752,9 @@ function apiPermit_(p, ctx) {
 function apiFile_(p, ctx) {
   var r = authorizedPermit_(p, ctx);
   var fileId = r.attachment_file, name = r.attachment_name, mime0 = r.attachment_mime;
-  if (p.fid !== undefined && p.fid !== null && p.fid !== '') { // a checklist item file (same access rules)
+  if (p.fid !== undefined && p.fid !== null && p.fid !== '') { // a checklist item file / work-done photo (same access rules)
     var x = null;
-    itemFilesOf_(r).some(function (f) { if (String(f.fid) === String(p.fid)) { x = f; return true; } return false; });
+    itemFilesOf_(r).concat(workDonePhotosOf_(r)).some(function (f) { if (String(f.fid) === String(p.fid)) { x = f; return true; } return false; });
     if (!x) fail_('ไม่พบไฟล์', 'NOT_FOUND');
     fileId = x.file; name = x.name; mime0 = x.mime;
   }
@@ -710,6 +767,81 @@ function apiFile_(p, ctx) {
     inline: ['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/bmp'].indexOf(mime) >= 0,
     base64: Utilities.base64Encode(blob.getBytes())
   };
+}
+
+// ---------------------------------------------------------------- TOKEN: contractor reports the work done
+var WP_WORK_DONE_NOTE_MAX = 1000;
+
+/** work_done is allowed once, on an approved permit (also past its work window), never pending / rejected / closed. */
+function workDoneCheck_(r) {
+  if (r.work_done_at) fail_('แจ้งเสร็จงานไปแล้วเมื่อ ' + teamsThaiDate_(r.work_done_at, true), 'CONFLICT');
+  if (r.status !== 'approved') {
+    var st = WP_DATA.status[r.status];
+    fail_('แจ้งเสร็จงานได้เฉพาะใบอนุญาตที่อนุมัติแล้ว (สถานะปัจจุบัน: ' + (st ? st.label : r.status) + ')', 'CONFLICT');
+  }
+}
+
+/**
+ * work_done — the requester (contractor) holding the permit's tracking token (`no` + `t`)
+ * reports the work done: 1..workDonePhotoMax photos (checkWorkDonePhotos_) + an optional
+ * note. Photos are stored privately in the app Drive folder (served only through
+ * action=file by fid, same access rules as the attachment). Records work_done_at /
+ * work_done_note / work_done_photos (columns created on first write), logs
+ * "ผู้รับเหมาแจ้งเสร็จงาน" and sends a Teams card @mentioning the responsible, the
+ * area owner and the จป. The status stays "approved" (the จป. still closes it).
+ */
+function apiWorkDone_(d, ctx) {
+  var auth = { no: d.no, t: d.t }; // token only — never by id / session
+  workDoneCheck_(authorizedPermit_(auth, ctx)); // cheap checks before decoding / uploading anything
+  var photos = checkWorkDonePhotos_(d.photos);
+  var note = str_(d.note, WP_WORK_DONE_NOTE_MAX);
+  var created = [], done = null, out;
+  try {
+    var tag = stampName_('x').replace(/\.x$/, '');
+    var list = photos.map(function (f, i) {
+      var id = saveDriveFile_(f.bytes, f.mime, tag + '_done' + (i + 1) + '.' + f.ext);
+      created.push(id);
+      return { fid: randomHex_(16), name: f.name, mime: f.mime, size: f.bytes.length, file: id };
+    });
+    var cell = JSON.stringify(list);
+    toCell_(cell, 'work_done_photos');
+    out = withLock_(function () {
+      relockCtx_(ctx);
+      var t = table_(ctx, 'permits');
+      var p = authorizedPermit_(auth, ctx); // fresh, under the lock
+      workDoneCheck_(p);
+      ['work_done_at', 'work_done_note', 'work_done_photos'].forEach(function (h) { ensureColumn_(t, h); });
+      var stamp = nowStr_();
+      p.work_done_at = stamp;
+      p.work_done_note = note;
+      p.work_done_photos = cell;
+      p.updated_at = stamp;
+      writeRow_(t, p);
+      addLog_(ctx, p.id, 'work_done', teamsRequester_(p) || p.requester_name,
+        'ผู้รับเหมาแจ้งเสร็จงาน (รูปถ่าย ' + list.length + ' รูป)' + (note ? '\nหมายเหตุ: ' + note : ''));
+      done = { row: p, users: workDoneUsers_(ctx, p) };
+      return { work_done_at: stamp, photos: list.length, updated_at: stamp };
+    });
+  } catch (err) {
+    created.forEach(trashDriveFile_);
+    throw err;
+  }
+  notifyWorkDone_(done.row, done.users, out.photos); // after the lock is released; never throws
+  return out;
+}
+
+/** Who hears about "แจ้งเสร็จงาน": the assigned responsible + area owner (active), then the active จป. */
+function workDoneUsers_(ctx, r) {
+  var users = table_(ctx, 'users'), out = [], seen = {};
+  var add = function (u) {
+    if (!u || u.active !== '1' || seen[u.id]) return;
+    seen[u.id] = true;
+    out.push(u);
+  };
+  add(findById_(users, r.responsible_id));
+  add(findById_(users, r.area_owner_id));
+  activeUsersWithRole_(ctx, 'safety').forEach(add);
+  return out;
 }
 
 // ---------------------------------------------------------------- ADMIN
@@ -855,6 +987,9 @@ function apiSaveReview_(d, ctx) {
         // approval workflow: the "การอนุญาตทำงาน" cells of rows 1–2 are the stage approvals
         // (area owner / responsible signatures) — not typed by the จป.
         if (wf && sk === 'permit') return;
+        // a cell the page did not send is kept as stored: the view page no longer has inputs for
+        // "ก่อนเริ่มงาน" / "ระหว่างทำงาน" (merged into the approval column), older stamps stay
+        if (!Object.prototype.hasOwnProperty.call(role, sk)) return;
         var name = str_(role[sk] && role[sk].name, 150);
         var old = ins[rk][sk];
         if (name === '') { delete ins[rk][sk]; return; }
@@ -1296,8 +1431,7 @@ function apiDelete_(d, ctx) {
     var t = table_(ctx, 'permits');
     var p = findById_(t, d.id);
     if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
-    var fileIds = [p.attachment_file, p.requester_sign_file, p.owner_sign_file, p.approver_sign_file, p.area_sign_file, p.resp_sign_file]
-      .concat(itemFilesOf_(p).map(function (x) { return x.file; }));
+    var fileIds = permitFileIds_(p);
     fileIds.forEach(trashDriveFile_);
     var lt = table_(ctx, 'permit_logs');
     var logs = lt.rows.filter(function (l) { return Number(l.permit_id) === Number(p.id); });
@@ -1418,8 +1552,7 @@ function apiResetData_(p, ctx) {
     while (it.hasNext()) trashOne(it.next());
     var trackKeys = [];
     pt.rows.forEach(function (r) {
-      [r.attachment_file, r.requester_sign_file, r.owner_sign_file, r.approver_sign_file, r.area_sign_file, r.resp_sign_file]
-        .concat(itemFilesOf_(r).map(function (x) { return x.file; })).forEach(function (id) {
+      permitFileIds_(r).forEach(function (id) {
         if (!id || seen[id]) return;
         try { trashOne(DriveApp.getFileById(id)); } catch (e) { seen[id] = true; }
       });
@@ -1753,6 +1886,32 @@ function notifyStage_(r, users, reassigned) {
       lines: [reassigned ? 'จป. มอบหมายผู้อนุมัติใหม่สำหรับ ' + r.permit_no : 'ขั้นตอนก่อนหน้าเสร็จแล้ว — ' + r.permit_no + ' รอการพิจารณาของท่าน'],
       facts: teamsWorkflowFacts_(r),
       url: teamsAdminViewUrl_(r.id), urlTitle: 'เปิดพิจารณา'
+    });
+  });
+}
+
+/**
+ * work_done: "ผู้รับเหมาแจ้งเสร็จงาน" @mentioning the responsible, the area owner and the
+ * จป. (`users`, at most WP_TEAMS_MENTION_MAX; no e-mail → plain name). No photo / token in the card.
+ */
+function notifyWorkDone_(r, users, photoCount) {
+  return notifyTeams_(function () {
+    var who = teamsWho_(users);
+    return teamsCard_({
+      title: 'ผู้รับเหมาแจ้งเสร็จงาน ' + r.permit_no, color: 'Good', subtitle: 'แจ้งเสร็จงาน',
+      lines: [(who.text ? who.text + ' — ' : '') + 'กรุณาตรวจสอบหลังเสร็จงาน แล้วให้ จป. ปิดงาน'],
+      mentions: who.mentions,
+      facts: [
+        ['เลขที่', r.permit_no],
+        ['บริษัท (พื้นที่)', r.company],
+        ['สถานที่ปฏิบัติงาน', r.location],
+        ['วันที่ปฏิบัติงาน', teamsWhen_(r)],
+        ['ผู้ขออนุญาต', teamsRequester_(r) + (r.requester_company ? ' (' + r.requester_company + ')' : '')],
+        ['รูปถ่ายเมื่อเสร็จงาน', (Number(photoCount) || 0) + ' รูป'],
+        ['แจ้งเมื่อ', teamsThaiDate_(r.work_done_at, true)]
+      ],
+      note: r.work_done_note ? { label: 'หมายเหตุจากผู้รับเหมา', text: r.work_done_note } : null,
+      url: teamsAdminViewUrl_(r.id), urlTitle: 'ดูใบอนุญาต'
     });
   });
 }
