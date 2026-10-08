@@ -1,6 +1,7 @@
 // admin/view.php — review checklist, inspections, approve / reject / close / delete
-// + approval workflow: the assignee of stage 0–2 (ผู้รับผิดชอบงาน / เจ้าของพื้นที่) acts here;
-//   a จป. sees everything (as before) and may reassign the approvers of stages 0–2.
+// + approval workflow (ผู้รับผิดชอบงาน → เจ้าของพื้นที่ → จป.): the assignee of stage 1–2 acts here
+//   (stage 1: the responsible signs AND picks the area owner); a จป. sees everything (as before)
+//   and may reassign the approvers of stages 1–2.
 (async () => {
   if (WP.halt) return;
   const { $, $$ } = WP, D = WP.data, E = WP.esc, STG = D.stages;
@@ -23,7 +24,7 @@
   const ins = p.inspections || {};
   const me = (WP.user && WP.user.fullname) || '';
   const myId = +((WP.user && WP.user.id) || 0);
-  // the assignee of the current stage 0–2 (the server checks the same again)
+  // the assignee of the current stage 1–2 (the server checks the same again)
   const myStage = stage && stage !== 'safety' && WP.hasRole(STG[stage].role) &&
     (stage === 'area' ? p.area_owner_id === myId : p.responsible_id === myId) ? stage : '';
   WP.setPage((myStage ? 'อนุมัติใบอนุญาต ' : 'พิจารณาใบอนุญาต ') + p.permit_no, !safety ? 'mine' : (myStage ? 'mine' : p.status === 'pending' ? 'pending' : 'list'));
@@ -31,17 +32,18 @@
   const people = ap.ok ? ap.data : { responsible: [], area_owner: [] };
   const opts = (list, cur) => '<option value="">— เลือก —</option>' + list.map(x => `<option value="${+x.id}" ${+x.id === +cur ? 'selected' : ''}>${E(x.name)}</option>`).join('');
 
-  // stage approvers (เจ้าของพื้นที่ / ผู้รับผิดชอบงาน) tick the checklist when they approve (paper form:
+  // stage approvers (ผู้รับผิดชอบงาน / เจ้าของพื้นที่) tick the checklist when they approve (paper form:
   // "สำหรับผู้รับผิดชอบงาน/ผู้รับผิดชอบพื้นที่/ผู้ตรวจสอบงาน"); the จป. reviews it last
-  const clEditable = editable || myStage === 'area' || myStage === 'resp';
+  const clEditable = editable || !!myStage;
   // approvals table rows 1–2 of an approved permit: the assigned area owner / responsible sign their own inspection cells
-  const selfRows = p.status === 'approved' ? [['owner', 'area_owner', p.area_owner_id], ['contractor', 'responsible', p.responsible_id]]
+  const selfRows = p.status === 'approved' ? [['contractor', 'responsible', p.responsible_id], ['owner', 'area_owner', p.area_owner_id]]
     .filter(([, role, uid]) => uid && +uid === myId && WP.hasRole(role)).map(([rk]) => rk) : [];
-  // "การอนุญาตทำงาน (ผู้อนุมัติ)": workflow stage approvals (rows 1–2) and the จป. approval (row 3)
+  // "การอนุญาตทำงาน (ผู้อนุมัติ)": workflow stage approvals (row 1 ผู้รับผิดชอบงาน, row 2 เจ้าของพื้นที่)
+  // and the จป. approval (row 3)
   const done = ['approved', 'closed'].includes(p.status);
   const permitCell = rk => {
+    if (rk === 'contractor' && p.workflow) return { name: p.resp_approved_at ? p.responsible_name : '', at: p.resp_approved_at, img: sg.resp, wait: stage === 'assign' || stage === 'resp' };
     if (rk === 'owner' && p.workflow) return { name: p.area_approved_at ? p.area_owner_name : '', at: p.area_approved_at, img: sg.area, wait: stage === 'area' };
-    if (rk === 'contractor' && p.workflow) return { name: p.resp_approved_at ? p.responsible_name : '', at: p.resp_approved_at, img: sg.resp, wait: stage === 'resp' };
     if (rk === 'safety') { const c = (ins.safety || {}).permit; return { name: c ? c.name : (done ? p.approver_name : ''), at: c ? c.at : (done ? p.approved_at : ''), img: done ? sg.approver : '', wait: stage === 'safety' }; }
     return null; // legacy permit without workflow: typed by the จป. as before
   };
@@ -85,25 +87,17 @@
 
   // ---------- approval workflow cards ----------
   let flow = '';
-  if (myStage === 'assign') {
-    flow = `<div class="card mb2 glow-border always reveal" id="wf-card">
-      <div class="card-h"><span class="ch-ic" style="color:var(--gold)"><i class="fa-solid ${STG.assign.icon} ic-wiggle"></i></span><h3>ขั้นที่ 0: ${E(STG.assign.label)}</h3></div>
-      <div class="card-b">
-        <p class="text2 mt0">ท่านเป็น <b>ผู้รับผิดชอบงาน</b> ของคำขอนี้ — กรุณาระบุเจ้าของพื้นที่เพื่อส่งให้อนุมัติขั้นที่ 1</p>
-        <div class="field mb2"><label><i class="fa-solid fa-map-location-dot"></i> เจ้าของพื้นที่ <span class="req">*</span></label>
-          <select class="input" id="wf-area">${opts(people.area_owner, 0)}</select></div>
-        <div class="grid g2 mt2">
-          <button class="btn danger" id="wf-reject"><i class="fa-solid fa-circle-xmark"></i> ไม่อนุมัติ</button>
-          <button class="btn" id="wf-assign"><i class="fa-solid fa-share-from-square"></i> ส่งให้เจ้าของพื้นที่</button>
-        </div>
-      </div>
-    </div>`;
-  } else if (myStage) {
+  // where an approval goes next: stage 1 → the picked area owner; area → จป. (or, on a permit
+  // started before the order changed, the responsible who has not approved yet); resp → จป.
+  const nextOf = st => st === 'assign' ? 'เจ้าของพื้นที่' : (st === 'area' && !p.resp_approved_at ? 'ผู้รับผิดชอบงาน' : 'จป.');
+  if (myStage) {
     const S = STG[myStage];
     flow = `<div class="card mb2 glow-border always reveal" id="wf-card">
       <div class="card-h"><span class="ch-ic" style="color:var(--gold)"><i class="fa-solid ${S.icon} ic-wiggle"></i></span><h3>ขั้นที่ ${S.no}: ${E(S.label)}</h3></div>
       <div class="card-b">
-        <p class="text2 mt0">ท่านเป็น <b>${E(D.roles[S.role])}</b> ของคำขอนี้ — ตรวจสอบรายละเอียดแล้วลงนามอนุมัติ หรือไม่อนุมัติพร้อมเหตุผล</p>
+        <p class="text2 mt0">ท่านเป็น <b>${E(D.roles[S.role])}</b> ของคำขอนี้ — ตรวจสอบรายละเอียดแล้วลงนามอนุมัติ${myStage === 'assign' ? ' พร้อมระบุเจ้าของพื้นที่ (อนุมัติขั้นที่ 2)' : ''} หรือไม่อนุมัติพร้อมเหตุผล</p>
+        ${myStage === 'assign' ? `<div class="field mb2"><label><i class="fa-solid fa-map-location-dot"></i> เจ้าของพื้นที่ <span class="req">*</span></label>
+          <select class="input" id="wf-area">${opts(people.area_owner, 0)}</select></div>` : ''}
         <div class="field mb2"><label><i class="fa-solid fa-comment-dots"></i> ความเห็น (ถ้ามี)</label><textarea class="input" id="wf-comment" placeholder="ความเห็น / เงื่อนไขเพิ่มเติม"></textarea></div>
         <div id="wf-sig-box"></div>
         <div class="grid g2 mt2">
@@ -118,8 +112,8 @@
       <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-hourglass-half ic-spin"></i></span><h3>รอขั้นตอนก่อนหน้า</h3></div>
       <div class="card-b">
         <p class="text2 mt0">${WP.stageBadge(p)}<br><small>ตั้งแต่ ${WP.thaiDate(p.stage_started_at, true)}</small></p>
-        <p class="text2">จป. พิจารณาได้หลังผู้รับผิดชอบงานอนุมัติ (ขั้นที่ 2) แล้ว — หากผู้อนุมัติไม่อยู่ มอบหมายผู้อื่นแทนได้:</p>
-        <div class="field mb1"><label><i class="fa-solid fa-user-tie"></i> ผู้รับผิดชอบงาน</label><select class="input" id="ra-resp">${opts(people.responsible, p.responsible_id)}</select></div>
+        <p class="text2">จป. พิจารณาได้หลังผู้รับผิดชอบงาน (ขั้นที่ 1) และเจ้าของพื้นที่ (ขั้นที่ 2) อนุมัติแล้ว — หากผู้อนุมัติไม่อยู่ มอบหมายผู้อื่นแทนได้:</p>
+        ${p.resp_approved_at ? '' : `<div class="field mb1"><label><i class="fa-solid fa-user-tie"></i> ผู้รับผิดชอบงาน</label><select class="input" id="ra-resp">${opts(people.responsible, p.responsible_id)}</select></div>`}
         ${stage === 'area' ? `<div class="field mb1"><label><i class="fa-solid fa-map-location-dot"></i> เจ้าของพื้นที่</label><select class="input" id="ra-area">${opts(people.area_owner, p.area_owner_id)}</select></div>` : ''}
         <button class="btn ghost w100 mt1" id="ra-save"><i class="fa-solid fa-people-arrows"></i> มอบหมายใหม่</button>
       </div>
@@ -128,10 +122,10 @@
   const wfSigns = !p.workflow ? '' : `<div class="card mb2 reveal">
       <div class="card-h"><span class="ch-ic"><i class="fa-solid fa-route ic-bob"></i></span><h3>การอนุมัติตามลำดับ</h3></div>
       <div class="card-b wf-signs">
-        ${[['area', 'เจ้าของพื้นที่', p.area_owner_name, p.area_approved_at, sg.area, p.area_comment],
-           ['resp', 'ผู้รับผิดชอบงาน', p.responsible_name, p.resp_approved_at, sg.resp, p.resp_comment],
-           ['safety', 'จป.', p.status === 'approved' || p.status === 'closed' ? p.approver_name : '', p.status === 'approved' || p.status === 'closed' ? p.approved_at : '', sg.approver, '']]
-          .map(([k, lbl, name, at, img, c]) => `<div>${img ? `<img class="sig-img" src="${img}">` : `<div class="muted" style="padding:20px 0">${stage === k ? '— รออนุมัติ —' : '—'}</div>`}
+        ${[[['assign', 'resp'], '1. ผู้รับผิดชอบงาน', p.responsible_name, p.resp_approved_at, sg.resp, p.resp_comment],
+           [['area'], '2. เจ้าของพื้นที่', p.area_owner_name, p.area_approved_at, sg.area, p.area_comment],
+           [['safety'], '3. จป.', p.status === 'approved' || p.status === 'closed' ? p.approver_name : '', p.status === 'approved' || p.status === 'closed' ? p.approved_at : '', sg.approver, '']]
+          .map(([k, lbl, name, at, img, c]) => `<div>${img ? `<img class="sig-img" src="${img}">` : `<div class="muted" style="padding:20px 0">${k.includes(stage) ? '— รออนุมัติ —' : '—'}</div>`}
             <small class="text2"><b>${E(lbl)}</b><br>${E(name || '-')}${at ? '<br>' + WP.thaiDate(at, true) : ''}${c ? '<br>“' + E(c) + '”' : ''}</small></div>`).join('')}
       </div>
     </div>`;
@@ -183,7 +177,7 @@
     <div class="meta"><span><i class="fa-solid fa-user"></i> ${E(p.requester_name)} (${E(p.requester_company)})</span><span><i class="fa-solid fa-location-dot"></i> ${E(p.location)}</span><span><i class="fa-regular fa-paper-plane"></i> ยื่นเมื่อ ${WP.thaiDate(p.created_at, true)}</span></div>
   </div>
   <div class="actions">
-    ${myStage ? `<a class="btn gold" href="#wf-card"><i class="fa-solid fa-gavel"></i> ${myStage === 'assign' ? 'ระบุเจ้าของพื้นที่' : 'อนุมัติ / ไม่อนุมัติ'}</a>` : ''}
+    ${myStage ? `<a class="btn gold" href="#wf-card"><i class="fa-solid fa-gavel"></i> อนุมัติ / ไม่อนุมัติ</a>` : ''}
     <a class="btn ghost" href="../print.html?id=${p.id}" target="_blank"><i class="fa-solid fa-print"></i> พิมพ์</a>
     ${safety ? `<a class="btn ghost" id="btn-edit" href="../request.html?edit=${p.id}" title="แก้ไขข้อมูลที่ผู้ขอกรอก (ต้องใช้รหัสผ่าน Reset password)">✏️ แก้ไข</a>
     <button class="btn danger" id="btn-del" title="ลบใบอนุญาต (ต้องใช้รหัสผ่าน Reset password)">🗑 ลบ</button>` : `<a class="btn ghost" href="approvals.html"><i class="fa-solid fa-inbox"></i> รออนุมัติของฉัน</a>`}
@@ -321,7 +315,7 @@
     if (await WP.deletePermit(P.id, p.permit_no)) location.href = 'permits.html';
   };
 
-  // ---------- approval workflow actions (stage 0–2 assignee) ----------
+  // ---------- approval workflow actions (stage 1–2 assignee) ----------
   const after = async (x, title) => {
     if (!x.ok) { Swal.fire({ icon: 'error', title: 'ไม่สำเร็จ', text: x.msg }); return; }
     await Swal.fire({ icon: 'success', title, timer: 1600, showConfirmButton: false });
@@ -329,22 +323,17 @@
   };
   let wfPad = null;
   if ($('#wf-sig-box')) { $('#wf-sig-box').innerHTML = WP.sigHTML('wf-sig', `ลงชื่อ${E(D.roles[STG[myStage].role])} <span class="req">*</span>`); wfPad = new WP.SignaturePad($('#wf-sig')); }
-  $('#wf-assign')?.addEventListener('click', WP.busy(async () => {
-    const sel = $('#wf-area');
-    if (!sel.value) { sel.classList.add('invalid'); return Swal.fire({ icon: 'warning', title: 'กรุณาเลือกเจ้าของพื้นที่' }); }
-    const name = sel.selectedOptions[0].textContent;
-    const c = await Swal.fire({ icon: 'question', title: 'ส่งให้เจ้าของพื้นที่อนุมัติ?', html: `เจ้าของพื้นที่: <b>${E(name)}</b><br><small>ระบบจะแจ้งเตือนทาง Microsoft Teams</small>`, showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-share-from-square"></i> ส่งต่อ', cancelButtonText: 'ยกเลิก' });
-    if (!c.isConfirmed) return;
-    Swal.fire({ title: 'กำลังบันทึก...', showConfirmButton: false, allowOutsideClick: false, didOpen: () => Swal.showLoading() });
-    await after(await WP.api('assign_area', { id: P.id, area_owner_id: +sel.value, base: P.base }), 'ส่งให้เจ้าของพื้นที่แล้ว');
-  }));
   $('#wf-approve')?.addEventListener('click', WP.busy(async () => {
+    // stage 1: the responsible picks the area owner (ขั้นที่ 2) together with the signature
+    const sel = $('#wf-area');
+    if (sel && !sel.value) { sel.classList.add('invalid'); return Swal.fire({ icon: 'warning', title: 'กรุณาเลือกเจ้าของพื้นที่' }); }
     if (wfPad.empty) return Swal.fire({ icon: 'warning', title: 'กรุณาลงลายมือชื่อ' });
-    const next = myStage === 'area' ? 'ผู้รับผิดชอบงาน' : 'จป.';
-    const c = await Swal.fire({ icon: 'question', title: 'ยืนยันอนุมัติ?', html: `คำขอจะถูกส่งต่อให้ <b>${next}</b> พิจารณาในขั้นถัดไป`, showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-circle-check"></i> อนุมัติ', cancelButtonText: 'ยกเลิก' });
+    const next = nextOf(myStage) + (sel ? ' (' + sel.selectedOptions[0].textContent + ')' : '');
+    const c = await Swal.fire({ icon: 'question', title: 'ยืนยันอนุมัติ?', html: `คำขอจะถูกส่งต่อให้ <b>${E(next)}</b> พิจารณาในขั้นถัดไป<br><small>ระบบจะแจ้งเตือนทาง Microsoft Teams</small>`, showCancelButton: true, confirmButtonText: '<i class="fa-solid fa-circle-check"></i> อนุมัติ', cancelButtonText: 'ยกเลิก' });
     if (!c.isConfirmed) return;
     Swal.fire({ title: 'กำลังบันทึก...', showConfirmButton: false, allowOutsideClick: false, didOpen: () => Swal.showLoading() });
     const x = await WP.api('stage_decide', { id: P.id, decision: 'approve', comment: $('#wf-comment').value, sign: wfPad.toData(), base: P.base,
+      ...(sel ? { area_owner_id: +sel.value } : {}),
       checklist: WP.collectChecklist($('#checklist')), ...($('#loto') ? { loto: WP.collectLoto($('#loto')) } : {}) });
     if (x.ok) WP.celebrate();
     await after(x, 'อนุมัติเรียบร้อย — ส่งต่อให้' + next + 'แล้ว');
@@ -354,10 +343,10 @@
     if (!x.isConfirmed) return;
     await after(await WP.api('stage_decide', { id: P.id, decision: 'reject', comment: x.value, base: P.base }), 'บันทึกไม่อนุมัติแล้ว');
   }));
-  // ---------- จป.: reassign the approvers of stages 0–2 ----------
+  // ---------- จป.: reassign the approvers of stages 1–2 ----------
   $('#ra-save')?.addEventListener('click', WP.busy(async () => {
     const data = { id: P.id, base: P.base };
-    if ($('#ra-resp').value) data.responsible_id = +$('#ra-resp').value;
+    if ($('#ra-resp') && $('#ra-resp').value) data.responsible_id = +$('#ra-resp').value;
     if ($('#ra-area') && $('#ra-area').value) data.area_owner_id = +$('#ra-area').value;
     const x = await WP.api('reassign', data);
     if (!x.ok) return Swal.fire({ icon: 'error', title: 'มอบหมายไม่สำเร็จ', text: x.msg });

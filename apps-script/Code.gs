@@ -45,7 +45,8 @@ var WP_SCHEMA = {
     'requester_sign_file', 'owner_sign_file', 'attachment_file', 'attachment_name', 'attachment_mime',
     'status', 'approver_id', 'approver_name', 'approver_sign_file', 'approve_comment', 'approved_at', 'closed_at',
     'created_at', 'updated_at',
-    // approval workflow (stage 0 assign → 1 area owner → 2 responsible → 3 จป.); see Permits.gs
+    // approval workflow (stage 1 assign = responsible approves + picks the area owner → 2 area owner → 3 จป.;
+    // legacy in-flight: area → resp → จป.); see Permits.gs
     'responsible_id', 'responsible_name', 'area_owner_id', 'area_owner_name', 'stage', 'stage_started_at',
     'area_assigned_at', 'area_approved_at', 'area_sign_file', 'area_comment',
     'resp_approved_at', 'resp_sign_file', 'resp_comment', 'reject_stage',

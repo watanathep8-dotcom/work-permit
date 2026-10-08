@@ -22,7 +22,7 @@
     return `<span class="badge ${s.cls}"><i class="fa-solid ${s.icon}"></i> ${s.label}</span>`;
   };
 
-  /** Pending permits in the approval workflow: which stage (0–3) they wait at. */
+  /** Pending permits in the approval workflow: which stage (1–3) they wait at. */
   WP.stageBadge = p => {
     const st = p && p.status === 'pending' && D.stages && D.stages[p.stage];
     if (!st) return '';
@@ -105,17 +105,19 @@
 
   /**
    * Approval workflow progress (permits with a responsible): every stage with its
-   * time. Shows stage names and timestamps only — no names, no signatures.
+   * time, in the order ผู้รับผิดชอบงาน (1) → เจ้าของพื้นที่ (2) → จป. (3). Step i = stage
+   * no, so a permit started before the order changed (area owner first, then the
+   * legacy stage "resp" = 1) is shown on the same steps with their own times.
+   * Shows stage names and timestamps only — no names, no signatures.
    */
   WP.workflowStepsHTML = p => {
     const st = p.status, stg = D.stages || {};
-    const rejectAt = st === 'rejected' ? ({ assign: 1, area: 2, resp: 3, safety: 4 }[p.reject_stage] || 4) : -1;
-    const curAt = st === 'pending' ? (stg[p.stage] ? stg[p.stage].no + 1 : 4) : (st === 'approved' ? 4 : -1);
+    const rejectAt = st === 'rejected' ? ((stg[p.reject_stage] || stg.safety).no) : -1;
+    const curAt = st === 'pending' ? (stg[p.stage] || stg.safety).no : (st === 'approved' ? stg.safety.no : -1);
     const steps = [
       ['fa-paper-plane', 'ยื่นคำขอ', p.created_at],
-      [stg.assign.icon, stg.assign.short, p.area_assigned_at],
+      [stg.assign.icon, stg.assign.short, p.resp_approved_at],
       [stg.area.icon, stg.area.short, p.area_approved_at],
-      [stg.resp.icon, stg.resp.short, p.resp_approved_at],
       [stg.safety.icon, st === 'approved' || st === 'closed' ? 'จป. อนุมัติ / ปฏิบัติงาน' : stg.safety.short, ['approved', 'closed'].includes(st) ? p.approved_at : ''],
       ['fa-flag-checkered', 'ปิดงาน', p.closed_at]
     ];

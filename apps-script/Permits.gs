@@ -8,17 +8,27 @@
  *       assigned to (responsible_id / area_owner_id), by `id`, or
  *   (c) the requester holding that permit's tracking token (`no` + `t`).
  *
- * Approval workflow (status stays "pending" until the จป. decides):
+ * Approval workflow (status stays "pending" until the จป. decides) — order
+ * ผู้รับผิดชอบงาน → เจ้าของพื้นที่ → จป.:
  *   submit (requester picks an active "ผู้รับผิดชอบงาน")
- *   → stage assign  "รอระบุเจ้าของพื้นที่"     the assigned responsible picks the area owner (or rejects)
- *   → stage area    "รอเจ้าของพื้นที่อนุมัติ"    the assigned area owner approves (signature) or rejects
- *   → stage resp    "รอผู้รับผิดชอบงานอนุมัติ"   the assigned responsible approves (signature) or rejects
- *   → stage safety  "รอ จป. อนุมัติ"            any จป.: review / approve / reject exactly as before
+ *   → stage assign  (ขั้นที่ 1) "รอผู้รับผิดชอบงานอนุมัติ"  the assigned responsible reviews, ticks the
+ *                    checklist, SIGNS the approval and picks the area owner in one action (or rejects)
+ *   → stage area    (ขั้นที่ 2) "รอเจ้าของพื้นที่อนุมัติ"   the assigned area owner approves (signature) or rejects
+ *   → stage safety  (ขั้นที่ 3) "รอ จป. อนุมัติ"           any จป.: review / approve / reject exactly as before
  *   → approved → inspections / close (expiry counts from the work window, as before)
  * Only the assignee of the current stage may act; a จป. may reassign the
- * responsible / area owner (someone is absent) but never act for them.
+ * responsible (until they approved) / area owner (stage area) but never act for them.
  * A pending permit without responsible_id (created before the workflow, or while
  * no responsible user existed) is at stage "safety" directly.
+ *
+ * In-flight permits from the previous order (area owner first, responsible second)
+ * finish the way they started: a permit at stage "area" whose responsible has NOT
+ * approved yet (no resp_approved_at) goes area → resp (legacy stage, numbered
+ * ขั้นที่ 1 like the responsible's row of the approvals table) → safety; a permit
+ * at "resp" goes resp → safety. A permit at "assign" simply gets the new combined
+ * step. The old action assign_area (a page cached before the update) still works:
+ * it picks the area owner without the responsible's signature, so that permit
+ * then follows the legacy path too — nobody's approval is ever skipped.
  */
 
 var WP_MIME_BY_EXT = {
@@ -498,7 +508,7 @@ function apiTrackList_(p, ctx) {
       if (String(r.created_at).substring(0, 10) < from && String(r.work_date) < from) return false;
       var st = r.status === 'pending' ? stageOf_(r) : '';
       var who = '';
-      if (st === 'assign' || st === 'resp') who = r.responsible_name || '';
+      if (st === 'assign' || st === 'resp') who = r.responsible_name || ''; // ขั้นที่ 1 (resp: legacy order)
       else if (st === 'area') who = r.area_owner_name || '';
       out.push({
         permit_no: r.permit_no, requester_company: r.requester_company, requester_name: r.requester_name,
@@ -619,7 +629,7 @@ function submitOut_(ctx, row, d) {
  * api.php?action=submit — anonymous, like the original.
  * `responsible_id`: the "ผู้รับผิดชอบงาน" picked from action=responsibles. Required
  * while at least one active responsible user exists (the permit then starts at
- * stage "assign"); with no responsible user at all the permit goes straight to
+ * stage "assign" = ขั้นที่ 1, the responsible approves first); with no responsible user at all the permit goes straight to
  * the จป. (stage "safety"), so the form keeps working before accounts are set up.
  */
 function apiSubmit_(d) {
@@ -1026,8 +1036,8 @@ function apiDecide_(d, ctx) {
       if (!p) fail_('ไม่พบใบอนุญาต', 'NOT_FOUND');
       var stamp = nowStr_();
       if (decision !== 'close' && p.status === 'pending' && stageOf_(p) !== 'safety') {
-        // stages 0–2 belong to the assigned responsible / area owner — the จป. may reassign, not act for them
-        fail_('ใบอนุญาตนี้ยังอยู่ในขั้นตอน "' + WP_DATA.stages[stageOf_(p)].label + '" — จป. พิจารณาได้หลังผู้รับผิดชอบงานอนุมัติแล้ว', 'CONFLICT');
+        // stages 1–2 belong to the assigned responsible / area owner — the จป. may reassign, not act for them
+        fail_('ใบอนุญาตนี้ยังอยู่ในขั้นตอน "' + WP_DATA.stages[stageOf_(p)].label + '" — จป. พิจารณาได้หลังผู้รับผิดชอบงานและเจ้าของพื้นที่อนุมัติแล้ว', 'CONFLICT');
       }
       if (decision === 'approve') {
         if (p.status !== 'pending') fail_('ใบอนุญาตนี้ไม่ได้อยู่ในสถานะรออนุมัติ');
@@ -1067,7 +1077,7 @@ function apiDecide_(d, ctx) {
   return out;
 }
 
-// ---------------------------------------------------------------- APPROVAL WORKFLOW (stages 0–2)
+// ---------------------------------------------------------------- APPROVAL WORKFLOW (stages 1–2)
 /** Current stage of a pending permit ('' when not pending). No responsible → straight to the จป. */
 function stageOf_(r) {
   if (!r || r.status !== 'pending') return '';
@@ -1084,7 +1094,7 @@ function enterStage_(r, stage, stamp) {
   r.reminder_count = '0';
 }
 
-/** User id assigned to a stage (0 for the จป. stage — any จป.). */
+/** User id assigned to a stage (0 for the จป. stage — any จป.). assign / resp (legacy) = the responsible. */
 function stageAssigneeId_(r, stage) {
   if (stage === 'assign' || stage === 'resp') return Number(r.responsible_id) || 0;
   if (stage === 'area') return Number(r.area_owner_id) || 0;
@@ -1153,7 +1163,7 @@ function apiApprovers_(p, ctx) {
 }
 
 /**
- * "รออนุมัติของฉัน": pending permits whose CURRENT stage (0–2) is assigned to the
+ * "รออนุมัติของฉัน": pending permits whose CURRENT stage (1–2) is assigned to the
  * caller, plus recent permits assigned to them. Only the caller's own permits —
  * never admin-wide data. Cached per user under the data version.
  */
@@ -1190,7 +1200,12 @@ function wfStageCheck_(p, want) {
   return st;
 }
 
-/** Stage 0: the assigned responsible picks the area owner → stage 1. */
+/**
+ * Legacy action (a page cached before the order changed): at stage assign the
+ * responsible picks the area owner WITHOUT signing → stage area; that permit then
+ * follows the legacy path area → resp → safety (see the header). The current page
+ * uses stage_decide (approve + area_owner_id) instead.
+ */
 function apiAssignArea_(d, ctx) {
   requireUser_(d, ctx);
   var done = null;
@@ -1217,8 +1232,13 @@ function apiAssignArea_(d, ctx) {
 }
 
 /**
- * Stages 0–2 by their assignee: approve (stage 1 / 2, signature required) or
- * reject (any of 0–2, reason required). Stage 3 is the จป.'s action=decide.
+ * Stages 1–2 by their assignee: approve (signature required) or reject (reason
+ * required). Stage 3 is the จป.'s action=decide.
+ *  - assign (ขั้นที่ 1): the responsible approves AND picks the area owner
+ *    (`area_owner_id`) in one action → area
+ *  - area   (ขั้นที่ 2): the area owner approves → safety; on a legacy permit whose
+ *    responsible has not approved yet (no resp_approved_at) → resp
+ *  - resp   (legacy, the responsible after the area owner): approves → safety
  */
 function apiStageDecide_(d, ctx) {
   requireUser_(d, ctx);
@@ -1248,7 +1268,11 @@ function apiStageDecide_(d, ctx) {
         done = { row: p, reject: true, by: u.fullname + ' (' + roleLabel + ')', stage: st };
         return { status: p.status, stage: '', updated_at: p.updated_at };
       }
-      if (st === 'assign') fail_('กรุณาระบุเจ้าของพื้นที่ก่อน (ขั้นตอนนี้ไม่มีการลงนาม)');
+      var ao = null;
+      if (st === 'assign') {
+        ao = activeRoleUser_(ctx, d.area_owner_id, 'area_owner');
+        if (!ao) fail_('กรุณาเลือกเจ้าของพื้นที่ (ผู้ใช้ที่มีบทบาทเจ้าของพื้นที่และเปิดใช้งานอยู่)');
+      }
       if (!sign) fail_('กรุณาลงลายมือชื่อ' + roleLabel);
       // the area owner / responsible tick the checklist of the paper form ("สำหรับผู้รับผิดชอบงาน/
       // ผู้รับผิดชอบพื้นที่/ผู้ตรวจสอบงาน") when they approve; the จป. reviews it last (optional)
@@ -1258,14 +1282,26 @@ function apiStageDecide_(d, ctx) {
         p.checklist = cl;
       }
       if (Array.isArray(d.loto) && jdec_(p.work_types, []).indexOf('electric') >= 0) p.loto = JSON.stringify(cleanLoto_(d.loto));
-      signFile = saveDriveFile_(sign, 'image/png', p.permit_no + '_' + st + '_' + randomHex_(8) + '.png');
+      signFile = saveDriveFile_(sign, 'image/png', p.permit_no + '_' + (st === 'area' ? 'area' : 'resp') + '_' + randomHex_(8) + '.png');
       var next;
-      if (st === 'area') {
+      if (st === 'assign') {
+        p.resp_approved_at = stamp; p.resp_sign_file = signFile; p.resp_comment = comment;
+        p.area_owner_id = ao.id; p.area_owner_name = ao.fullname; p.area_assigned_at = stamp;
+        enterStage_(p, 'area', stamp);
+        addLog_(ctx, p.id, 'resp_approve', u.fullname, comment || 'ผู้รับผิดชอบงานอนุมัติ');
+        addLog_(ctx, p.id, 'assign_area', u.fullname, 'ระบุเจ้าของพื้นที่: ' + ao.fullname);
+        next = [ao];
+      } else if (st === 'area') {
         p.area_approved_at = stamp; p.area_sign_file = signFile; p.area_comment = comment;
-        enterStage_(p, 'resp', stamp);
         addLog_(ctx, p.id, 'area_approve', u.fullname, comment || 'เจ้าของพื้นที่อนุมัติ');
-        var ru = findById_(table_(ctx, 'users'), p.responsible_id);
-        next = ru ? [ru] : [];
+        if (p.resp_approved_at) {
+          enterStage_(p, 'safety', stamp);
+          next = activeUsersWithRole_(ctx, 'safety');
+        } else { // legacy order: the responsible has not approved yet
+          enterStage_(p, 'resp', stamp);
+          var ru = findById_(table_(ctx, 'users'), p.responsible_id);
+          next = ru ? [ru] : [];
+        }
       } else {
         p.resp_approved_at = stamp; p.resp_sign_file = signFile; p.resp_comment = comment;
         enterStage_(p, 'safety', stamp);
@@ -1287,9 +1323,9 @@ function apiStageDecide_(d, ctx) {
 }
 
 /**
- * Approvals table of the paper form, rows 1–2: the assigned area owner (row
- * "owner" = 1. เจ้าของพื้นที่โครงการ) and the assigned responsible (row
- * "contractor" = 2. ผู้รับผิดชอบงาน) sign their OWN inspection cells
+ * Approvals table of the paper form, rows 1–2: the assigned responsible (row
+ * "contractor" = 1. ผู้รับผิดชอบงาน) and the assigned area owner (row
+ * "owner" = 2. เจ้าของพื้นที่โครงการ) sign their OWN inspection cells
  * (ก่อนเริ่มงาน / ระหว่างทำงาน / หลังเสร็จงาน) of an approved permit, stamped with
  * their account name + time. An already signed cell is never overwritten (the
  * จป. may still correct any cell with save_review, as before). `row` is needed
@@ -1331,10 +1367,11 @@ function apiInspectSign_(d, ctx) {
 }
 
 /**
- * จป. only: reassign the responsible (stages 0–2) and/or the area owner (stage 1)
- * of a pending permit, e.g. when someone is absent. If the CURRENT stage's
- * assignee changes, that stage's clock and reminders restart and the new
- * assignee is notified. The จป. never approves stages 0–2 themself.
+ * จป. only: reassign the responsible (until they approved: stage assign, or a
+ * legacy area / resp) and/or the area owner (stage area) of a pending permit,
+ * e.g. when someone is absent. If the CURRENT stage's assignee changes, that
+ * stage's clock and reminders restart and the new assignee is notified. The จป.
+ * never approves stages 1–2 themself.
  */
 function apiReassign_(d, ctx) {
   requireAdmin_(d, ctx);
@@ -1352,6 +1389,8 @@ function apiReassign_(d, ctx) {
       var ru = activeRoleUser_(ctx, d.responsible_id, 'responsible');
       if (!ru) fail_('ผู้รับผิดชอบงานที่เลือกไม่ถูกต้องหรือถูกปิดการใช้งาน');
       if (Number(ru.id) !== Number(p.responsible_id)) {
+        // the signed approval stays with the person who signed it
+        if (p.resp_approved_at) fail_('ผู้รับผิดชอบงาน (' + p.responsible_name + ') อนุมัติแล้ว — เปลี่ยนผู้รับผิดชอบงานไม่ได้', 'CONFLICT');
         notes.push('ผู้รับผิดชอบงาน: ' + (p.responsible_name || '-') + ' → ' + ru.fullname);
         p.responsible_id = ru.id; p.responsible_name = ru.fullname;
       }
@@ -1773,7 +1812,7 @@ var WP_TEAMS_DECISIONS = {
   close: { title: 'ปิดงานใบอนุญาตแล้ว', color: 'Good', label: 'ปิดงาน', note: 'หมายเหตุ' }
 };
 
-/** approve / reject / close by a จป.; reject at stage 0–2 by its assignee (`stage` = where it was rejected). */
+/** approve / reject / close by a จป.; reject at stage 1–2 by its assignee (`stage` = where it was rejected). */
 function notifyDecision_(r, decision, byName, comment, stage) {
   return notifyTeams_(function () {
     var h = WP_TEAMS_DECISIONS[decision];
@@ -1860,7 +1899,7 @@ function stageUsers_(ctx, r) {
   return u ? [u] : [];
 }
 
-/** submit with a responsible: "มีคำขอใบอนุญาตใหม่" @mentioning them (stage 0: pick the area owner). */
+/** submit with a responsible: "มีคำขอใบอนุญาตใหม่" @mentioning them (ขั้นที่ 1: approve + pick the area owner). */
 function notifyNewWorkflowPermit_(r, resp) {
   return notifyTeams_(function () {
     var who = teamsWho_([resp]);
@@ -1868,10 +1907,10 @@ function notifyNewWorkflowPermit_(r, resp) {
     facts.splice(5, 0, ['เบอร์โทรผู้ขอ', r.requester_phone], ['จำนวนผู้ปฏิบัติงาน', (Number(r.worker_count) || 0) + ' คน']);
     return teamsCard_({
       title: 'มีคำขอใบอนุญาตใหม่', color: 'Good', subtitle: 'แจ้งเตือนผู้อนุมัติ',
-      lines: ['ขั้นที่ 0: ' + WP_DATA.roles.responsible + ' — ' + who.text + ' กรุณาเข้าสู่ระบบเพื่อระบุเจ้าของพื้นที่'],
+      lines: ['ขั้นที่ ' + WP_DATA.stages.assign.no + ': ' + WP_DATA.roles.responsible + ' — ' + who.text + ' กรุณาเข้าสู่ระบบเพื่อตรวจสอบ ลงนามอนุมัติ และระบุเจ้าของพื้นที่'],
       mentions: who.mentions,
       facts: facts,
-      url: teamsAdminViewUrl_(r.id), urlTitle: 'เปิดคำขอ / ระบุเจ้าของพื้นที่'
+      url: teamsAdminViewUrl_(r.id), urlTitle: 'เปิดพิจารณา / อนุมัติ'
     });
   });
 }
