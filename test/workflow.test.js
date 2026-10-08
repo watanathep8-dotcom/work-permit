@@ -183,6 +183,11 @@ module.exports = function run() {
   c = lastCard();
   check('teams: stage 1 card "รออนุมัติขั้นที่ 1: เจ้าของพื้นที่ — <at>…</at>"', content(c).body[0].items[0].text === 'รออนุมัติขั้นที่ 1: เจ้าของพื้นที่ — <at>อารี เจ้าของพื้นที่</at>' &&
     ents(c).length === 1 && ents(c)[0].mentioned.id === 'aree@company.co.th', content(c).body[0]);
+  r = get({ action: 'track_list' });
+  const tl = r.ok && r.data.find((x) => x.permit_no === P.permit_no);
+  check('GET track_list: public short row, waits at area owner by name', !!tl && tl.stage === 'area' && tl.waiting_name === 'อารี เจ้าของพื้นที่' && tl.status === 'pending', r);
+  check('GET track_list: no phone / token / details / ids', r.ok && r.data.every((x) => Object.keys(x).sort().join() ===
+    'es,permit_no,requester_company,requester_name,stage,status,time_from,time_to,waiting_name,work_date,work_types'), r.data && r.data[0]);
   check('assign_area again → CONFLICT (stage moved on)', post({ action: 'assign_area', session: SR1, id: P.id, area_owner_id: ids.area2, base: base0 }).code === 'CONFLICT');
 
   // ================================================================ stage 1 (area owner)

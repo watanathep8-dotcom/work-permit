@@ -107,7 +107,7 @@
     return j;
   };
   // Actions that change nothing; any other action (a write) wipes the browser read cache.
-  const READS = new Set(['me', 'poll', 'dashboard', 'permits', 'users', 'permit', 'stats', 'file', 'track', 'ping', 'config', 'batch', 'my_tasks', 'approvers', 'responsibles']);
+  const READS = new Set(['me', 'poll', 'dashboard', 'permits', 'users', 'permit', 'stats', 'file', 'track', 'ping', 'config', 'batch', 'my_tasks', 'approvers', 'responsibles', 'track_list']);
   // Writes and anything carrying a secret: POST, text/plain JSON body (no CORS preflight).
   let writes = 0;
   WP.api = async (action, data = {}, opts = {}) => {

@@ -102,6 +102,7 @@ function routes_() {
     stats: apiStats_,
     submit: apiSubmit_,
     track: apiTrack_,
+    track_list: apiTrackList_,   // public short list (no phone / details / token)
     login: apiLogin_,
     logout: apiLogout_,
     responsibles: apiResponsibles_,  // active "ผู้รับผิดชอบงาน": id + name only
@@ -132,7 +133,7 @@ function routes_() {
     batch: apiBatch_
   };
 }
-var WP_GET_ACTIONS = { ping: true, config: true, stats: true, responsibles: true };
+var WP_GET_ACTIONS = { ping: true, config: true, stats: true, responsibles: true, track_list: true };
 
 function handle_(action, params, method) {
   try {

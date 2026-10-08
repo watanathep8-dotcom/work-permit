@@ -426,6 +426,34 @@ function authorizedPermit_(p, ctx) {
 
 // ---------------------------------------------------------------- PUBLIC
 /** index.php hero counters (aggregate numbers only — no permit data). */
+/**
+ * Public "ติดตามสถานะ" list: recent permits in SHORT form only — no phone, no
+ * workers, no details/files/signatures and no tracking token. Who a pending
+ * permit waits for is the stage's role + the assignee's name.
+ */
+var WP_TRACK_LIST_DAYS = 60, WP_TRACK_LIST_MAX = 200;
+function apiTrackList_(p, ctx) {
+  return cachedRead_(ctx, 'track_list', null, function () {
+    var rows = permitsDesc_(ctx);
+    var from = Utilities.formatDate(new Date(Date.now() - WP_TRACK_LIST_DAYS * 86400000), WP_TZ, 'yyyy-MM-dd');
+    var out = [];
+    rows.some(function (r) {
+      if (String(r.created_at).substring(0, 10) < from && String(r.work_date) < from) return false;
+      var st = r.status === 'pending' ? stageOf_(r) : '';
+      var who = '';
+      if (st === 'assign' || st === 'resp') who = r.responsible_name || '';
+      else if (st === 'area') who = r.area_owner_name || '';
+      out.push({
+        permit_no: r.permit_no, requester_company: r.requester_company, requester_name: r.requester_name,
+        work_types: jdec_(r.work_types, []), work_date: r.work_date, time_from: r.time_from, time_to: r.time_to,
+        status: r.status, es: effectiveStatus_(r), stage: st, waiting_name: who
+      });
+      return out.length >= WP_TRACK_LIST_MAX;
+    });
+    return { data: out, until: permitsValidUntil_(rows) };
+  });
+}
+
 function apiStats_(p, ctx) {
   return cachedRead_(ctx, 'stats', null, function () {
     var today = todayStr_();
