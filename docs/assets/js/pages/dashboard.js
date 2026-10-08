@@ -76,16 +76,34 @@
 
   if (window.Chart) {
     Chart.defaults.color = '#a7d8bd'; Chart.defaults.font.family = 'Kanit'; Chart.defaults.borderColor = 'rgba(52,211,153,.12)';
+    // value labels: count above each bar / on each doughnut slice (0 is skipped)
+    const valueLabels = { id: 'valueLabels', afterDatasetsDraw(chart) {
+      const c = chart.ctx, doughnut = chart.config.type === 'doughnut';
+      chart.data.datasets.forEach((ds, i) => chart.getDatasetMeta(i).data.forEach((el, j) => {
+        const v = +ds.data[j]; if (!v || el.hidden) return;
+        let x, y;
+        if (doughnut) { ({ x, y } = el.tooltipPosition()); } else { x = el.x; y = el.y - 8; }
+        c.save();
+        c.font = '600 13px Kanit'; c.textAlign = 'center'; c.textBaseline = doughnut ? 'middle' : 'bottom';
+        c.lineWidth = 3; c.strokeStyle = 'rgba(4,23,14,.85)'; c.strokeText(String(v), x, y);
+        c.fillStyle = '#ecfdf5'; c.fillText(String(v), x, y);
+        c.restore();
+      }));
+    } };
     const ctx = document.getElementById('c-days').getContext('2d');
     const g = ctx.createLinearGradient(0, 0, 0, 280); g.addColorStop(0, 'rgba(163,230,53,.9)'); g.addColorStop(1, 'rgba(16,185,129,.15)');
     charts.push(new Chart(ctx, { type: 'bar', data: { labels: d.days.map(x => new Date(x.date + 'T12:00:00').toLocaleDateString('th-TH', { day: 'numeric', month: 'short' })),
       datasets: [{ label: 'จำนวนคำขอ', data: d.days.map(x => x.count), backgroundColor: g, borderRadius: 8, borderSkipped: false, maxBarThickness: 34 }] },
-      options: { maintainAspectRatio: false, animation: { duration: 1600, easing: 'easeOutElastic', delay: c => c.dataIndex * 60 },
-        plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, ticks: { precision: 0 } }, x: { grid: { display: false } } } } }));
+      plugins: [valueLabels],
+      options: { maintainAspectRatio: false, layout: { padding: { top: 20 } }, animation: { duration: 1600, easing: 'easeOutElastic', delay: c => c.dataIndex * 60 },
+        plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true, grace: '10%', ticks: { precision: 0 } }, x: { grid: { display: false } } } } }));
     const keys = Object.keys(WT);
     charts.push(new Chart(document.getElementById('c-types'), { type: 'doughnut', data: { labels: keys.map(k => WT[k].short),
       datasets: [{ data: keys.map(k => d.byType[k] || 0), backgroundColor: keys.map(k => WT[k].color), borderColor: '#04170e', borderWidth: 3, hoverOffset: 14 }] },
-      options: { maintainAspectRatio: false, cutout: '64%', animation: { animateRotate: true, duration: 1800 }, plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, padding: 14 } } } } }));
+      plugins: [valueLabels],
+      options: { maintainAspectRatio: false, cutout: '64%', animation: { animateRotate: true, duration: 1800 }, plugins: { legend: { position: 'bottom', labels: { usePointStyle: true, padding: 14,
+        // legend shows the count too: "งานทั่วไป (3)"
+        generateLabels: chart => Chart.overrides.doughnut.plugins.legend.labels.generateLabels(chart).map(l => ({ ...l, text: l.text + ' (' + (chart.data.datasets[0].data[l.index] || 0) + ')' })) } } } } }));
   }
   tick();
   $('#reset-data').onclick = resetData;
