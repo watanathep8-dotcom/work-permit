@@ -10,7 +10,6 @@ var WP_DATA = {
   "config": {
     "appName": "e-Work Permit",
     "formCode": "FM-MR-58",
-    "permitValidHours": 24,
     "uploadMaxMb": 10,
     "uploadExt": [
       "pdf",
@@ -83,11 +82,6 @@ var WP_DATA = {
       "label": "ปิดงานแล้ว",
       "icon": "fa-flag-checkered",
       "cls": "st-closed"
-    },
-    "expired": {
-      "label": "หมดอายุ",
-      "icon": "fa-clock",
-      "cls": "st-expired"
     }
   },
   "workTypes": {
