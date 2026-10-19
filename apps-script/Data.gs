@@ -983,7 +983,8 @@ var WP_DATA = {
   "roles": {
     "safety": "จป. (เจ้าหน้าที่ความปลอดภัย)",
     "responsible": "ผู้รับผิดชอบงาน",
-    "area_owner": "เจ้าของพื้นที่"
+    "area_owner": "เจ้าของพื้นที่",
+    "management": "ฝ่ายบริหาร"
   },
   "stages": {
     "assign": {
