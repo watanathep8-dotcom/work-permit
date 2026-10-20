@@ -7,8 +7,8 @@
   const { $, $$ } = WP, D = WP.data, E = WP.esc, STG = D.stages;
   const root = $('#view-root');
   const id = +WP.qs('id');
-  const safety = WP.isSafety();
-  const home = safety ? 'permits.html' : 'approvals.html';
+  const safety = WP.isSafety(), ro = WP.readOnly(); // ro = ฝ่ายบริหาร: sees everything, acts on nothing
+  const home = safety || ro ? 'permits.html' : 'approvals.html';
   if (!id) { location.replace(home); return; }
   // batched with the sidebar's me + poll / my_tasks
   const [r, ap] = await Promise.all([WP.read('permit', { id, signs: true }), WP.read('approvers')]);
@@ -27,7 +27,7 @@
   // the assignee of the current stage 1–2 (the server checks the same again)
   const myStage = stage && stage !== 'safety' && WP.hasRole(STG[stage].role) &&
     (stage === 'area' ? p.area_owner_id === myId : p.responsible_id === myId) ? stage : '';
-  WP.setPage((myStage ? 'อนุมัติใบอนุญาต ' : 'พิจารณาใบอนุญาต ') + p.permit_no, !safety ? 'mine' : (myStage ? 'mine' : p.status === 'pending' ? 'pending' : 'list'));
+  WP.setPage((myStage ? 'อนุมัติใบอนุญาต ' : 'พิจารณาใบอนุญาต ') + p.permit_no, !safety && !ro ? 'mine' : (myStage ? 'mine' : p.status === 'pending' ? 'pending' : 'list'));
   const P = { id: p.id, types, checklist: p.checklist || {}, loto: p.loto || [], confined: p.confined || {}, editable, me, base: p.updated_at };
   const people = ap.ok ? ap.data : { responsible: [], area_owner: [] };
   const opts = (list, cur) => '<option value="">— เลือก —</option>' + list.map(x => `<option value="${+x.id}" ${+x.id === +cur ? 'selected' : ''}>${E(x.name)}</option>`).join('');
@@ -131,8 +131,15 @@
     </div>`;
 
   let side = '';
-  if (!safety) {
+  if (!safety && !(ro && p.status !== 'pending')) {
     side = '';
+  } else if (ro && p.status === 'approved') {
+    side = `<div class="card mb2 reveal"><div class="card-b">
+      ${WP.statusBadge(es)}
+      <p class="text2">อนุมัติโดย <b>${E(p.approver_name)}</b> · ${WP.thaiDate(p.approved_at, true)}</p>
+      ${sg.approver ? `<img class="sig-img" src="${sg.approver}">` : ''}
+      ${p.approve_comment ? `<p class="text2">เงื่อนไข: ${WP.nl2br(p.approve_comment)}</p>` : ''}
+    </div></div>`;
   } else if (p.status === 'pending' && stage !== 'safety') {
     side = '';
   } else if (p.status === 'pending') {
@@ -180,7 +187,7 @@
     ${myStage ? `<a class="btn gold" href="#wf-card"><i class="fa-solid fa-gavel"></i> อนุมัติ / ไม่อนุมัติ</a>` : ''}
     <a class="btn ghost" href="../print.html?id=${p.id}" target="_blank"><i class="fa-solid fa-print"></i> พิมพ์</a>
     ${safety ? `<a class="btn ghost" id="btn-edit" href="../request.html?edit=${p.id}" title="แก้ไขข้อมูลที่ผู้ขอกรอก (ต้องใช้รหัสแก้ไขข้อมูลของคุณ — รหัสเฉพาะ จป.)">✏️ แก้ไข</a>
-    <button class="btn danger" id="btn-del" title="ลบใบอนุญาต (ต้องใช้รหัสผ่าน Reset password)">🗑 ลบ</button>` : `<a class="btn ghost" href="approvals.html"><i class="fa-solid fa-inbox"></i> รออนุมัติของฉัน</a>`}
+    <button class="btn danger" id="btn-del" title="ลบใบอนุญาต (ต้องใช้รหัสผ่าน Reset password)">🗑 ลบ</button>` : ro ? `<a class="btn ghost" href="permits.html"><i class="fa-solid fa-folder-open"></i> ใบอนุญาตทั้งหมด</a>` : `<a class="btn ghost" href="approvals.html"><i class="fa-solid fa-inbox"></i> รออนุมัติของฉัน</a>`}
   </div>
 </div>
 

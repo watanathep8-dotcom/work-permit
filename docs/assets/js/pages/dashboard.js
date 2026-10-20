@@ -105,7 +105,7 @@
         generateLabels: chart => Chart.overrides.doughnut.plugins.legend.labels.generateLabels(chart).map(l => ({ ...l, text: l.text + ' (' + (chart.data.datasets[0].data[l.index] || 0) + ')' })) } } } } }));
   }
   tick();
-  $('#reset-data').onclick = resetData;
+  if (WP.readOnly()) $('#reset-data').remove(); else $('#reset-data').onclick = resetData;
   };
 
   // planned work window only — an approved permit does not expire; it stays active until the จป. closes it

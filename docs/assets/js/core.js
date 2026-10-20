@@ -82,8 +82,11 @@
   WP.roles = (u = WP.user) => (u && Array.isArray(u.roles) ? u.roles : (u ? ['safety'] : []));
   WP.hasRole = (role, u) => WP.roles(u).includes(role);
   WP.isSafety = u => WP.hasRole('safety', u);
+  // ฝ่ายบริหาร: sees everything a จป. sees, read-only (no approve / edit / delete / notifications)
+  WP.canViewAll = u => WP.isSafety(u) || WP.hasRole('management', u);
+  WP.readOnly = u => !WP.isSafety(u) && WP.hasRole('management', u);
   // Where a logged-in user starts: จป. → dashboard, approvers → "รออนุมัติของฉัน".
-  WP.homeUrl = u => WP.base + (WP.isSafety(u) ? '/admin/dashboard.html' : '/admin/approvals.html');
+  WP.homeUrl = u => WP.base + (WP.canViewAll(u) ? '/admin/dashboard.html' : '/admin/approvals.html');
 
   // ---------- API ----------
   const noApi = () => ({ ok: false, code: 'NO_API', error: 'ยังไม่ได้ตั้งค่า apiUrl ใน docs/config.js', msg: 'ยังไม่ได้ตั้งค่า apiUrl ใน docs/config.js' });

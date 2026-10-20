@@ -863,7 +863,7 @@ function workDoneUsers_(ctx, r) {
 // ---------------------------------------------------------------- ADMIN
 /** api.php?action=poll */
 function apiPoll_(p, ctx) {
-  requireAdmin_(p, ctx);
+  requireViewer_(p, ctx);
   var hasSince = p.since !== undefined && p.since !== null && p.since !== '';
   var since = hasSince ? Number(p.since) || 0 : null;
   return pollCached_(ctx, hasSince, since);
@@ -887,7 +887,7 @@ function pollCached_(ctx, hasSince, since) {
 
 /** admin/dashboard.php aggregates. */
 function apiDashboard_(p, ctx) {
-  var u = requireAdmin_(p, ctx);
+  var u = requireViewer_(p, ctx);
   // aggregates are the same for every admin: cached once, the user is added per request
   var agg = dashboardCached_(ctx);
   return {
@@ -930,7 +930,7 @@ function dashboardAgg_(ctx) {
 
 /** admin/permits.php search + filters + status tabs. */
 function apiPermits_(p, ctx) {
-  requireAdmin_(p, ctx);
+  requireViewer_(p, ctx);
   var q = str_(p.q, 200).toLowerCase();
   var type = String(p.type || '');
   var from = /^\d{4}-\d{2}-\d{2}$/.test(String(p.from || '')) ? p.from : '';
@@ -1116,9 +1116,9 @@ function canActOnStage_(u, r) {
   return stageAssigneeId_(r, st) === Number(u.id);
 }
 
-/** จป.: every permit. Approvers: the permits they are assigned to (any status). */
+/** จป. / ฝ่ายบริหาร: every permit. Approvers: the permits they are assigned to (any status). */
 function canViewPermit_(u, r) {
-  if (hasRole_(u, 'safety')) return true;
+  if (canViewAll_(u)) return true;
   var id = Number(u.id);
   return (Number(r.responsible_id) === id && hasRole_(u, 'responsible')) ||
     (Number(r.area_owner_id) === id && hasRole_(u, 'area_owner'));

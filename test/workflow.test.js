@@ -525,5 +525,20 @@ module.exports = function run() {
   check('concatenated .gs: full workflow, reminders + trigger install work', ok1 && sp2 && rem.ok && rem.due === 1 &&
     g1.context.installApprovalReminderTrigger().installed === 1 && g1.fetches.length === 6, { ok1, rem, n: g1.fetches.length });
 
+  // ================================================================ ฝ่ายบริหาร (management): reads everything like a จป., acts on nothing, never notified
+  const mid = p1({ action: 'user_save', session: s1, username: 'mg1', fullname: 'M One', roles: ['management'], email: 'mg1@x.co', password: 'mg1-pass' }).data.id;
+  check('management: account saved with role management', mid && p1({ action: 'users', session: s1 }).data.users.find((u) => u.id === mid).roles.join() === 'management');
+  const sm = p1({ action: 'login', username: 'mg1', password: 'mg1-pass' }).data.session;
+  const f0 = g1.fetches.length;
+  const sp3 = p1(body({ responsible_id: rid, work_date: '2026-10-10' })).data;
+  ['dashboard', 'permits', 'users', 'poll'].forEach((a) => check('management: can read ' + a, p1({ action: a, session: sm }).ok, a));
+  check('management: can open any permit (not assigned to them)', p1({ action: 'permit', session: sm, id: sp.id }).ok && p1({ action: 'permit', session: sm, id: sp3.id }).ok);
+  [['decide', { id: sp3.id, decision: 'approve', sign: SIG }], ['stage_decide', { id: sp3.id, decision: 'approve', sign: SIG, area_owner_id: aid }],
+    ['save_review', { id: sp3.id }], ['reassign', { id: sp3.id, responsible_id: rid }], ['update_permit', { id: sp3.id }], ['delete', { id: sp3.id }],
+    ['user_save', { username: 'zz9', fullname: 'Z', roles: ['safety'], password: 'zz9-pass' }], ['user_toggle', { id: rid }], ['reset_data', {}]]
+    .forEach(([a, x]) => { const r9 = p1(Object.assign({ action: a, session: sm }, x)); check('management: refused ' + a, !r9.ok && (r9.code === 'FORBIDDEN' || r9.code === 'NOT_FOUND'), r9); });
+  check('management: never @mentioned in Teams cards', g1.fetches.slice(f0).every((f) => !JSON.stringify(f).includes('mg1@x.co')) && g1.fetches.length > f0);
+  check('management: permit still pending stage 1 after refused actions', p1({ action: 'permit', session: s1, id: sp3.id }).data.permit.stage === 'assign');
+
   return { passed, failures };
 };

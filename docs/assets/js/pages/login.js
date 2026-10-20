@@ -6,7 +6,7 @@
   const next = () => {
     const n = WP.qs('next');
     if (!/^admin\/(view|approvals|dashboard|permits|users)\.html(\?[\w=&%.-]*)?$/.test(n)) return '';
-    if (!WP.isSafety() && !/^admin\/(view|approvals)\.html/.test(n)) return '';
+    if (!WP.canViewAll() && !/^admin\/(view|approvals)\.html/.test(n)) return '';
     return WP.base + '/' + n;
   };
   if (WP.session) { location.replace(next() || WP.homeUrl()); return; }

@@ -39,6 +39,7 @@ if (!noApi) {
   const s = call({ action: 'login', username: 'admin', password: DEV_ADMIN_PASSWORD }).data.session;
   call({ action: 'user_save', session: s, username: 'resp', fullname: 'สมศักดิ์ ผู้รับผิดชอบงาน', roles: ['responsible'], email: 'resp@example.com', password: DEV_APPROVER_PASSWORD });
   call({ action: 'user_save', session: s, username: 'area', fullname: 'อารี เจ้าของพื้นที่', roles: ['area_owner'], email: 'area@example.com', password: DEV_APPROVER_PASSWORD });
+  call({ action: 'user_save', session: s, username: 'mgmt', fullname: 'มานพ ฝ่ายบริหาร', roles: ['management'], email: 'mgmt@example.com', password: DEV_APPROVER_PASSWORD });
   const me = call({ action: 'me', session: s }).data; // admin's own edit password enables ✏️ แก้ไข in the preview
   call({ action: 'user_save', session: s, id: me.id, fullname: me.fullname, position: me.position, edit_password: DEV_EDIT_PASSWORD });
   call({ action: 'logout', session: s });

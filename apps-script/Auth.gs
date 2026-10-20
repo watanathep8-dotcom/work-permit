@@ -195,6 +195,16 @@ function requireUser_(p, ctx) {
   return u;
 }
 
+/** จป. or ฝ่ายบริหาร (management): may READ everything (management never approves / edits / gets notified). */
+function canViewAll_(u) { return hasRole_(u, 'safety') || hasRole_(u, 'management'); }
+
+/** Read-only admin pages (dashboard, all permits, users list): จป. or ฝ่ายบริหาร. */
+function requireViewer_(p, ctx) {
+  var u = requireUser_(p, ctx);
+  if (!canViewAll_(u)) fail_('เฉพาะเจ้าหน้าที่ความปลอดภัย (จป.) หรือฝ่ายบริหารเท่านั้น', 'FORBIDDEN');
+  return u;
+}
+
 /** จป. only: a logged-in user with role safety, else AUTH / FORBIDDEN. */
 function requireAdmin_(p, ctx) {
   var u = requireUser_(p, ctx);
@@ -207,7 +217,7 @@ function apiMe_(p, ctx) {
 }
 
 function apiUsers_(p, ctx) {
-  requireAdmin_(p, ctx);
+  requireViewer_(p, ctx);
   var t = table_(ctx, 'users');
   var admin = findUserByName_(t, 'admin');
   return {

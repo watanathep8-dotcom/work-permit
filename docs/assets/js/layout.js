@@ -22,7 +22,7 @@
     location.replace(B + '/login.html?next=' + encodeURIComponent(location.pathname.replace(/^.*\/admin\//, 'admin/') + location.search));
     return;
   }
-  if (layout === 'admin' && !allowAll && !WP.isSafety()) {
+  if (layout === 'admin' && !allowAll && !WP.canViewAll()) {
     // ผู้รับผิดชอบงาน / เจ้าของพื้นที่: no admin-wide pages — their own list instead
     WP.halt = true;
     location.replace(B + '/admin/approvals.html');
@@ -55,7 +55,7 @@
   let main;
   if (layout === 'admin') {
     const u = WP.user || {};
-    const safety = WP.isSafety(), approver = WP.hasRole('responsible') || WP.hasRole('area_owner');
+    const safety = WP.canViewAll(), readOnly = WP.readOnly(), approver = WP.hasRole('responsible') || WP.hasRole('area_owner');
     const nav = (key, href, icon, label, extra = '') =>
       `<a href="${B}/${href}" class="${active === key ? 'active' : ''}" data-nav="${key}"><i class="fa-solid ${icon}"></i><span>${label}</span>${extra}</a>`;
     const mine = nav('mine', 'admin/approvals.html', 'fa-inbox', 'รออนุมัติของฉัน', '<em class="nav-count zero" id="nav-mine">0</em>');
@@ -64,12 +64,12 @@
     aside.innerHTML = `
   <a class="brand" href="${WP.homeUrl()}">
     <span class="brand-icon"><i class="fa-solid fa-shield-halved"></i></span>
-    <span class="brand-text"><b>e-Work Permit</b><small>${safety ? 'ระบบอนุมัติ จป.' : 'ระบบอนุมัติใบอนุญาต'}</small><small class="programming-credit">Programming by Duongruthai_Milk</small></span>
+    <span class="brand-text"><b>e-Work Permit</b><small>${readOnly ? 'ฝ่ายบริหาร (ดูข้อมูล)' : safety ? 'ระบบอนุมัติ จป.' : 'ระบบอนุมัติใบอนุญาต'}</small><small class="programming-credit">Programming by Duongruthai_Milk</small></span>
   </a>
   <nav class="side-nav">
     ${safety ? `
     ${nav('dash', 'admin/dashboard.html', 'fa-gauge-high', 'แดชบอร์ด')}
-    ${nav('pending', 'admin/permits.html?status=pending', 'fa-bell', 'รออนุมัติ', '<em class="nav-count" id="nav-pending">0</em>')}
+    ${nav('pending', 'admin/permits.html?status=pending', 'fa-bell', 'รออนุมัติ', readOnly ? '' : '<em class="nav-count" id="nav-pending">0</em>')}
     ${approver ? mine : ''}
     ${nav('list', 'admin/permits.html', 'fa-folder-open', 'ใบอนุญาตทั้งหมด')}
     ${nav('users', 'admin/users.html', 'fa-user-shield', 'ผู้ใช้งาน')}` : mine}
@@ -88,7 +88,7 @@
     <h1 class="topbar-title">${E(title)}</h1>
     <div class="topbar-right">
       <span class="clock" id="live-clock"></span>
-      <a href="${B}/admin/${WP.isSafety() ? 'permits.html?status=pending' : 'approvals.html'}" class="bell" id="bell"><i class="fa-solid fa-bell"></i><em id="bell-count">0</em></a>
+      ${readOnly && !approver ? '' : `<a href="${B}/admin/${WP.isSafety() ? 'permits.html?status=pending' : 'approvals.html'}" class="bell" id="bell"><i class="fa-solid fa-bell"></i><em id="bell-count">0</em></a>`}
     </div>
   </header>
   <main class="admin-content"></main>`;
@@ -108,7 +108,7 @@
     ${pn('home', 'index.html', 'fa-house', 'หน้าแรก')}
     ${pn('request', 'request.html', 'fa-file-signature', 'ขอใบอนุญาต')}
     ${pn('track', 'track.html', 'fa-magnifying-glass-location', 'ติดตามสถานะ')}
-    <a href="${WP.session ? WP.homeUrl() : B + '/login.html'}" class="nav-cta"><i class="fa-solid fa-user-shield"></i><span>${WP.session && !WP.isSafety() ? 'รออนุมัติของฉัน' : 'สำหรับ จป. / ผู้อนุมัติ'}</span></a>
+    <a href="${WP.session ? WP.homeUrl() : B + '/login.html'}" class="nav-cta"><i class="fa-solid fa-user-shield"></i><span>${WP.session && !WP.canViewAll() ? 'รออนุมัติของฉัน' : 'สำหรับ จป. / ผู้อนุมัติ'}</span></a>
   </nav>`;
     main = document.createElement('main');
     main.className = 'pub-content';
@@ -142,7 +142,7 @@
     WP.read('me').then(r => {
       if (!r.ok) return;
       WP.updateSessionUser(r.data);
-      if (!allowAll && !WP.isSafety(r.data)) { location.replace(B + '/admin/approvals.html'); return; }
+      if (!allowAll && !WP.canViewAll(r.data)) { location.replace(B + '/admin/approvals.html'); return; }
       const n = document.getElementById('me-name'), p = document.getElementById('me-pos');
       if (n) n.textContent = r.data.fullname; if (p) p.textContent = r.data.position;
     });

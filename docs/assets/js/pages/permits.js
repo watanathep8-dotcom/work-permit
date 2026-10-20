@@ -2,6 +2,7 @@
 (async () => {
   if (WP.halt) return;
   const { $ } = WP, D = WP.data, E = WP.esc;
+  const ro = WP.readOnly(); // ฝ่ายบริหาร: view only
   const sp = new URLSearchParams(location.search);
   const f = { status: sp.get('status') || '', q: (sp.get('q') || '').trim(), type: sp.get('type') || '', from: sp.get('from') || '', to: sp.get('to') || '' };
   WP.setPage(f.status === 'pending' ? 'คำขอรออนุมัติ' : 'ใบอนุญาตทั้งหมด', f.status === 'pending' ? 'pending' : 'list');
@@ -40,10 +41,10 @@
         <td class="nowrap">${WP.thaiDate(x.work_date)}<br><small class="muted">${WP.hm(x.time_from)}–${WP.hm(x.time_to)}</small></td>
         <td>${+x.worker_count || 0}</td>
         <td class="nowrap"><small>${WP.thaiDate(x.created_at, true)}</small></td>
-        <td class="nowrap"><a class="btn sm ${x.status === 'pending' ? 'gold' : 'ghost'}" href="view.html?id=${x.id}"><i class="fa-solid ${x.status === 'pending' ? 'fa-gavel' : 'fa-eye'}"></i> ${x.status === 'pending' ? 'พิจารณา' : 'ดู'}</a>
+        <td class="nowrap"><a class="btn sm ${x.status === 'pending' && !ro ? 'gold' : 'ghost'}" href="view.html?id=${x.id}"><i class="fa-solid ${x.status === 'pending' && !ro ? 'fa-gavel' : 'fa-eye'}"></i> ${x.status === 'pending' && !ro ? 'พิจารณา' : 'ดู'}</a>
           <a class="btn-icon" href="../print.html?id=${x.id}" target="_blank" title="พิมพ์"><i class="fa-solid fa-print"></i></a>
-          <a class="btn sm ghost" href="../request.html?edit=${x.id}" title="แก้ไขข้อมูล">✏️ แก้ไข</a>
-          <button type="button" class="btn sm danger" data-del="${x.id}" data-no="${E(x.permit_no)}" data-es="${E(x.es)}" title="ลบใบอนุญาต">🗑 ลบ</button></td>
+          ${ro ? '' : `<a class="btn sm ghost" href="../request.html?edit=${x.id}" title="แก้ไขข้อมูล">✏️ แก้ไข</a>
+          <button type="button" class="btn sm danger" data-del="${x.id}" data-no="${E(x.permit_no)}" data-es="${E(x.es)}" title="ลบใบอนุญาต">🗑 ลบ</button>`}</td>
       </tr>`).join('')}
   </tbody></table></div>`;
   if (bound) return;
